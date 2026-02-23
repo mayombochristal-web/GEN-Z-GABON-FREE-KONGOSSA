@@ -3,177 +3,255 @@ from cryptography.fernet import Fernet
 import hashlib
 import time
 import uuid
-import sqlite3
-import pandas as pd
-from datetime import datetime, timedelta
+import base64
+import os
 
 # =====================================================
-# 1. CONFIGURATION AVANCÉE
+# CONFIG
 # =====================================================
-st.set_page_config(page_title="KONGOSSA ULTRA V14", page_icon="🥷", layout="wide")
-
-# Initialisation de la base de données SQL locale
-def init_db():
-    conn = sqlite3.connect('vault.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS messages 
-                 (id TEXT, tunnel_id TEXT, sender TEXT, key TEXT, frags BLOB, 
-                  m_type TEXT, timestamp DATETIME)''')
-    conn.commit()
-    return conn
-
-db_conn = init_db()
+st.set_page_config(
+    page_title="FREE-KONGOSSA V14 ULTRA",
+    page_icon="🛰️",
+    layout="centered"
+)
 
 # =====================================================
-# 2. MOTEUR CRYPTO RENFORCÉ
+# GLOBAL SHARED MEMORY
 # =====================================================
-class UltraEngine:
+@st.cache_resource
+def get_db():
+    return {
+        "FLUX": {},
+        "PRESENCE": {},
+        "SIGNATURES": set()
+    }
+
+DB = get_db()
+
+# =====================================================
+# TTU ENGINE ULTRA
+# =====================================================
+class TTUEngine:
+
+    # ---- tunnel id ----
     @staticmethod
-    def get_sid(passkey):
-        return hashlib.sha3_512(passkey.encode()).hexdigest()[:16]
+    def tunnel_id(secret):
+        return hashlib.sha256(secret.encode()).hexdigest()[:16]
 
+    # ---- derive stable key ----
     @staticmethod
-    def pack(data):
-        key = Fernet.generate_key()
-        f = Fernet(key)
-        token = f.encrypt(data)
-        # Division dynamique en 3 segments
-        size = len(token)
-        parts = [token[:size//3], token[size//3:2*size//3], token[2*size//3:]]
-        return key.decode(), parts
+    def derive_key(secret):
+        k = hashlib.pbkdf2_hmac(
+            "sha256",
+            secret.encode(),
+            b"KONGOSSA-SALT",
+            100000
+        )
+        return base64.urlsafe_b64encode(k[:32])
 
+    # ---- triadic encryption ----
     @staticmethod
-    def unpack(key, parts):
-        f = Fernet(key.encode())
-        return f.decrypt(b"".join(parts))
+    def encrypt(secret, data):
 
-ENGINE = UltraEngine()
+        key = TTUEngine.derive_key(secret)
+        box = Fernet(key).encrypt(data)
+
+        n = len(box)
+        cuts = [n//3, 2*n//3]
+
+        return [
+            box[:cuts[0]],
+            box[cuts[0]:cuts[1]],
+            box[cuts[1]:]
+        ]
+
+    # ---- decrypt ----
+    @staticmethod
+    def decrypt(secret, frags):
+        key = TTUEngine.derive_key(secret)
+        return Fernet(key).decrypt(b"".join(frags))
+
+ENGINE = TTUEngine()
 
 # =====================================================
-# 3. DESIGN "DEEP WEB"
+# DESIGN ULTRA
 # =====================================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500&display=swap');
-    
-    html, body, [data-testid="stAppViewContainer"] {
-        background-color: #030303;
-        color: #00ff41;
-        font-family: 'JetBrains Mono', monospace;
-    }
-    
-    .stTextInput>div>div>input { background-color: #111; color: #00ff41; border: 1px solid #00ff41; }
-    
-    .msg-box {
-        background: rgba(10, 10, 10, 0.9);
-        border: 1px solid #1a1a1a;
-        padding: 20px;
-        border-radius: 5px;
-        margin: 10px 0;
-        transition: 0.3s;
-    }
-    .msg-box:hover { border-color: #00ff41; box-shadow: 0 0 10px #00ff4133; }
-    
-    .meta { font-size: 0.7em; color: #555; margin-bottom: 10px; }
-    .sender-id { color: #ff0055; font-weight: bold; }
-    .status-bar { border-top: 1px solid #333; padding-top: 10px; font-size: 0.8em; }
+.stApp {background:#040404;color:white;font-family:monospace;}
+.msg{
+ padding:14px;border-radius:14px;margin:10px 0;
+ background:#101010;border:1px solid #222;
+}
+.me{border-left:5px solid #00ffaa;}
+.other{border-left:5px solid #555;}
+.timer{opacity:.6;font-size:12px}
+.badge{
+ background:#00ffaa22;
+ padding:4px 10px;
+ border-radius:20px;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # =====================================================
-# 4. LOGIQUE DE SESSION
+# SESSION INIT
 # =====================================================
 if "uid" not in st.session_state:
-    st.session_state.uid = f"NODE-{str(uuid.uuid4())[:6].upper()}"
+    st.session_state.uid = f"Z-{uuid.uuid4().hex[:4]}"
 
-if "authenticated" not in st.session_state:
-    st.title("📟 ACCÈS TERMINAL KONGOSSA")
-    access_code = st.text_input("PASSWORD_ENTRY >", type="password")
-    if st.button("INITIALISER LE TUNNEL"):
-        if access_code:
-            st.session_state.sid = ENGINE.get_sid(access_code)
-            st.session_state.authenticated = True
+if "auth" not in st.session_state:
+    st.session_state.auth = False
+
+# =====================================================
+# AUTH
+# =====================================================
+if not st.session_state.auth:
+
+    st.title("🛰️ FREE-KONGOSSA ULTRA")
+
+    secret = st.text_input("Code secret", type="password")
+
+    if st.button("ENTRER"):
+        if secret:
+            st.session_state.secret = secret
+            st.session_state.sid = ENGINE.tunnel_id(secret)
+            st.session_state.auth = True
             st.rerun()
+
     st.stop()
 
-# =====================================================
-# 5. ACTIONS DB (ÉCRITURE/LECTURE)
-# =====================================================
-def send_signal(content, m_type):
-    key, frags = ENGINE.pack(content)
-    c = db_conn.cursor()
-    c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)",
-              (str(uuid.uuid4()), st.session_state.sid, st.session_state.uid, 
-               key, sqlite3.Binary(b"||".join(frags)), m_type, datetime.now()))
-    db_conn.commit()
-
-def get_signals():
-    # Suppression auto des messages de + de 24h
-    c = db_conn.cursor()
-    limit = datetime.now() - timedelta(hours=24)
-    c.execute("DELETE FROM messages WHERE timestamp < ?", (limit,))
-    db_conn.commit()
-    
-    # Récupération du tunnel actuel
-    df = pd.read_sql_query(f"SELECT * FROM messages WHERE tunnel_id='{st.session_state.sid}' ORDER BY timestamp DESC", db_conn)
-    return df
-
-# =====================================================
-# 6. INTERFACE DE DIFFUSION
-# =====================================================
+secret = st.session_state.secret
 sid = st.session_state.sid
-st.sidebar.title(f"🛰️ TUNNEL: {sid}")
-st.sidebar.write(f"VOTRE_ID: {st.session_state.uid}")
 
-if st.sidebar.button("LOGOUT / PURGE"):
-    st.session_state.clear()
-    st.rerun()
-
-with st.container():
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        msg_input = st.chat_input("Transmettre un signal dans le tunnel...")
-    with col2:
-        file_upload = st.file_uploader("Fichier", label_visibility="collapsed")
-
-if msg_input:
-    send_signal(msg_input.encode(), "text")
-    st.rerun()
-
-if file_upload:
-    send_signal(file_upload.getvalue(), file_upload.type)
-    st.success("Média injecté.")
-    time.sleep(1)
-    st.rerun()
+if sid not in DB["FLUX"]:
+    DB["FLUX"][sid] = []
 
 # =====================================================
-# 7. FLUX DE RÉCEPTION (DECRYPT)
+# PRESENCE HEARTBEAT
 # =====================================================
-signals = get_signals()
+now = time.time()
+DB["PRESENCE"][st.session_state.uid] = now
 
-for _, row in signals.iterrows():
-    with st.container():
-        st.markdown(f'<div class="msg-box">', unsafe_allow_html=True)
-        st.markdown(f'<div class="meta"><span class="sender-id">{row["sender"]}</span> @ {row["timestamp"][:16]}</div>', unsafe_allow_html=True)
-        
-        try:
-            # Reconstruction des fragments
-            frags = row["frags"].split(b"||")
-            raw_data = ENGINE.unpack(row["key"], frags)
-            
-            if "text" in row["m_type"]:
-                st.write(raw_data.decode())
-            elif "image" in row["m_type"]:
-                st.image(raw_data)
-            elif "video" in row["m_type"]:
-                st.video(raw_data)
-            elif "audio" in row["m_type"]:
-                st.audio(raw_data)
-        except:
-            st.error("SIGNAL CORROMPU OU CLÉ INVALIDE")
-            
-        st.markdown('</div>', unsafe_allow_html=True)
+# cleanup ghosts
+DB["PRESENCE"] = {
+    u:t for u,t in DB["PRESENCE"].items()
+    if now - t < 25
+}
 
-# Rafraîchissement intelligent
-time.sleep(10)
+active = len(DB["PRESENCE"])
+
+# =====================================================
+# AUTO PURGE EXPIRED
+# =====================================================
+TTL = 120  # secondes
+
+new_flux = []
+for m in DB["FLUX"][sid]:
+    if now < m["expiry"]:
+        new_flux.append(m)
+
+DB["FLUX"][sid] = new_flux
+
+# =====================================================
+# HEADER
+# =====================================================
+c1,c2 = st.columns([3,1])
+c1.title("💬 Tunnel sécurisé")
+c2.markdown(f"<div class='badge'>🟢 {active}</div>",
+            unsafe_allow_html=True)
+
+# =====================================================
+# DISPLAY
+# =====================================================
+for m in reversed(DB["FLUX"][sid]):
+
+    is_me = m["sender"] == st.session_state.uid
+    cls = "me" if is_me else "other"
+
+    try:
+        raw = ENGINE.decrypt(secret, m["frags"])
+
+        remaining = int(m["expiry"] - time.time())
+
+        st.markdown(f"<div class='msg {cls}'>",
+                    unsafe_allow_html=True)
+
+        st.caption("VOUS" if is_me else m["sender"])
+
+        if m["type"] == "text":
+            st.write(raw.decode())
+
+        elif "image" in m["type"]:
+            st.image(raw)
+
+        elif "video" in m["type"]:
+            st.video(raw)
+
+        elif "audio" in m["type"]:
+            st.audio(raw)
+
+        st.markdown(
+            f"<div class='timer'>⏳ {remaining}s</div>",
+            unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    except:
+        pass
+
+# =====================================================
+# SEND SIGNAL
+# =====================================================
+st.divider()
+
+mode = st.radio(
+    "Signal",
+    ["Texte","Média","Vocal"],
+    horizontal=True
+)
+
+def push_message(data, mtype):
+
+    frags = ENGINE.encrypt(secret, data)
+
+    signature = hashlib.sha256(
+        data + secret.encode()
+    ).hexdigest()
+
+    if signature in DB["SIGNATURES"]:
+        return
+
+    DB["SIGNATURES"].add(signature)
+
+    DB["FLUX"][sid].append({
+        "sender": st.session_state.uid,
+        "frags": frags,
+        "type": mtype,
+        "expiry": time.time() + TTL
+    })
+
+if mode == "Texte":
+    txt = st.text_area("Message")
+    if st.button("ENVOYER"):
+        if txt:
+            push_message(txt.encode(),"text")
+            st.rerun()
+
+elif mode == "Média":
+    f = st.file_uploader("Upload")
+    if f and st.button("DIFFUSER"):
+        push_message(f.getvalue(), f.type)
+        st.rerun()
+
+elif mode == "Vocal":
+    a = st.audio_input("Micro")
+    if a and st.button("ENVOYER VOCAL"):
+        push_message(a.getvalue(),"audio/wav")
+        st.rerun()
+
+# =====================================================
+# SMART REFRESH
+# =====================================================
+time.sleep(3)
 st.rerun()
