@@ -3,182 +3,177 @@ from cryptography.fernet import Fernet
 import hashlib
 import time
 import uuid
-import base64
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
 
 # =====================================================
-# 1. CONFIGURATION (IMPERATIF EN PREMIER)
+# 1. CONFIGURATION AVANCÉE
 # =====================================================
-st.set_page_config(page_title="FREE-KONGOSSA V13", page_icon="🛰️", layout="centered")
+st.set_page_config(page_title="KONGOSSA ULTRA V14", page_icon="🥷", layout="wide")
+
+# Initialisation de la base de données SQL locale
+def init_db():
+    conn = sqlite3.connect('vault.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS messages 
+                 (id TEXT, tunnel_id TEXT, sender TEXT, key TEXT, frags BLOB, 
+                  m_type TEXT, timestamp DATETIME)''')
+    conn.commit()
+    return conn
+
+db_conn = init_db()
 
 # =====================================================
-# 2. CACHE GLOBAL (LE TUNNEL COMMUN)
+# 2. MOTEUR CRYPTO RENFORCÉ
 # =====================================================
-@st.cache_resource
-def get_shared_db():
-    # Cette base est partagée entre TOUS les utilisateurs du serveur
-    return {
-        "FLUX": {},        # Contenu des messages
-        "PRESENCE": {},    # Utilisateurs actifs
-        "HISTORY": set()   # Anti-doublons
-    }
-
-DB = get_shared_db()
-
-# =====================================================
-# 3. MOTEUR DE CHIFFREMENT TTU
-# =====================================================
-class TTUEngine:
+class UltraEngine:
     @staticmethod
-    def tunnel_id(key):
-        return hashlib.sha256(key.encode()).hexdigest()[:12] if key else None
-
-    @staticmethod
-    def encrypt_triadic(data):
-        k = Fernet.generate_key()
-        box = Fernet(k).encrypt(data)
-        l = len(box)
-        return k, [box[:l//3], box[l//3:2*l//3], box[2*l//3:]]
+    def get_sid(passkey):
+        return hashlib.sha3_512(passkey.encode()).hexdigest()[:16]
 
     @staticmethod
-    def decrypt_triadic(k, frags):
-        return Fernet(k).decrypt(b"".join(frags))
+    def pack(data):
+        key = Fernet.generate_key()
+        f = Fernet(key)
+        token = f.encrypt(data)
+        # Division dynamique en 3 segments
+        size = len(token)
+        parts = [token[:size//3], token[size//3:2*size//3], token[2*size//3:]]
+        return key.decode(), parts
 
-ENGINE = TTUEngine()
+    @staticmethod
+    def unpack(key, parts):
+        f = Fernet(key.encode())
+        return f.decrypt(b"".join(parts))
+
+ENGINE = UltraEngine()
 
 # =====================================================
-# 4. DESIGN SOUVERAIN
+# 3. DESIGN "DEEP WEB"
 # =====================================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;600;900&display=swap');
-.stApp { background:#050505; color:white; font-family:'Outfit', sans-serif; }
-.msg-card {
-    background: #111; padding: 15px; border-radius: 15px;
-    margin-bottom: 15px; border: 1px solid #222;
-}
-.msg-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
-.user-tag { color: #00ffaa; font-weight: 900; font-size: 0.8em; }
-.time-tag { opacity: 0.5; font-size: 0.7em; }
-.presence-info { background: #00ffaa11; color: #00ffaa; padding: 5px 15px; border-radius: 20px; font-weight: bold; border: 1px solid #00ffaa; }
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500&display=swap');
+    
+    html, body, [data-testid="stAppViewContainer"] {
+        background-color: #030303;
+        color: #00ff41;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .stTextInput>div>div>input { background-color: #111; color: #00ff41; border: 1px solid #00ff41; }
+    
+    .msg-box {
+        background: rgba(10, 10, 10, 0.9);
+        border: 1px solid #1a1a1a;
+        padding: 20px;
+        border-radius: 5px;
+        margin: 10px 0;
+        transition: 0.3s;
+    }
+    .msg-box:hover { border-color: #00ff41; box-shadow: 0 0 10px #00ff4133; }
+    
+    .meta { font-size: 0.7em; color: #555; margin-bottom: 10px; }
+    .sender-id { color: #ff0055; font-weight: bold; }
+    .status-bar { border-top: 1px solid #333; padding-top: 10px; font-size: 0.8em; }
 </style>
 """, unsafe_allow_html=True)
 
 # =====================================================
-# 5. SESSION & AUTH
+# 4. LOGIQUE DE SESSION
 # =====================================================
 if "uid" not in st.session_state:
-    st.session_state.uid = f"Z-{str(uuid.uuid4())[:4]}"
+    st.session_state.uid = f"NODE-{str(uuid.uuid4())[:6].upper()}"
 
-if "auth" not in st.session_state:
-    st.session_state.auth = False
-
-if not st.session_state.auth:
-    st.title("🛰️ ACCÈS TUNNEL")
-    key = st.text_input("Entrez le code secret", type="password")
-    if st.button("OUVRIR LE FLUX"):
-        sid = ENGINE.tunnel_id(key)
-        if sid:
-            st.session_state.sid = sid
-            st.session_state.auth = True
+if "authenticated" not in st.session_state:
+    st.title("📟 ACCÈS TERMINAL KONGOSSA")
+    access_code = st.text_input("PASSWORD_ENTRY >", type="password")
+    if st.button("INITIALISER LE TUNNEL"):
+        if access_code:
+            st.session_state.sid = ENGINE.get_sid(access_code)
+            st.session_state.authenticated = True
             st.rerun()
     st.stop()
 
+# =====================================================
+# 5. ACTIONS DB (ÉCRITURE/LECTURE)
+# =====================================================
+def send_signal(content, m_type):
+    key, frags = ENGINE.pack(content)
+    c = db_conn.cursor()
+    c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)",
+              (str(uuid.uuid4()), st.session_state.sid, st.session_state.uid, 
+               key, sqlite3.Binary(b"||".join(frags)), m_type, datetime.now()))
+    db_conn.commit()
+
+def get_signals():
+    # Suppression auto des messages de + de 24h
+    c = db_conn.cursor()
+    limit = datetime.now() - timedelta(hours=24)
+    c.execute("DELETE FROM messages WHERE timestamp < ?", (limit,))
+    db_conn.commit()
+    
+    # Récupération du tunnel actuel
+    df = pd.read_sql_query(f"SELECT * FROM messages WHERE tunnel_id='{st.session_state.sid}' ORDER BY timestamp DESC", db_conn)
+    return df
+
+# =====================================================
+# 6. INTERFACE DE DIFFUSION
+# =====================================================
 sid = st.session_state.sid
-if sid not in DB["FLUX"]:
-    DB["FLUX"][sid] = []
+st.sidebar.title(f"🛰️ TUNNEL: {sid}")
+st.sidebar.write(f"VOTRE_ID: {st.session_state.uid}")
 
-# Mise à jour de la présence (Qui est là ?)
-DB["PRESENCE"][st.session_state.uid] = time.time()
-active_count = len([u for u, t in DB["PRESENCE"].items() if time.time() - t < 20])
+if st.sidebar.button("LOGOUT / PURGE"):
+    st.session_state.clear()
+    st.rerun()
 
-# =====================================================
-# 6. AFFICHAGE DES MESSAGES (FIL PUBLIC)
-# =====================================================
-c1, c2 = st.columns([2,1])
-c1.title("💬 Flux Public")
-c2.markdown(f"<br><span class='presence-info'>🟢 {active_count} ACTIFS</span>", unsafe_allow_html=True)
+with st.container():
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        msg_input = st.chat_input("Transmettre un signal dans le tunnel...")
+    with col2:
+        file_upload = st.file_uploader("Fichier", label_visibility="collapsed")
 
-st.markdown("---")
+if msg_input:
+    send_signal(msg_input.encode(), "text")
+    st.rerun()
 
-# On affiche TOUS les messages contenus dans DB["FLUX"][sid]
-messages = DB["FLUX"][sid]
-
-if not messages:
-    st.info("Le tunnel est vide. Soyez le premier à briser le silence.")
-
-for p in reversed(messages):
-    is_me = p["sender"] == st.session_state.uid
-    border_color = "#00ffaa" if is_me else "#444"
-    
-    st.markdown(f"""
-    <div class="msg-card" style="border-left: 5px solid {border_color};">
-        <div class="msg-header">
-            <span class="user-tag">{"VOUS" if is_me else p['sender']}</span>
-            <span class="time-tag">{p['time']}</span>
-        </div>
-    """, unsafe_allow_html=True)
-
-    try:
-        raw = ENGINE.decrypt_triadic(p["k"], p["frags"])
-        if p["is_txt"]:
-            st.write(raw.decode())
-        else:
-            if "image" in p["type"]: st.image(raw)
-            elif "video" in p["type"]: st.video(raw)
-            elif "audio" in p["type"]: st.audio(raw)
-    except:
-        st.error("Échec de déchiffrement du signal")
-    
-    st.markdown("</div>", unsafe_allow_html=True)
+if file_upload:
+    send_signal(file_upload.getvalue(), file_upload.type)
+    st.success("Média injecté.")
+    time.sleep(1)
+    st.rerun()
 
 # =====================================================
-# 7. ENVOI DE MESSAGE
+# 7. FLUX DE RÉCEPTION (DECRYPT)
 # =====================================================
-st.markdown("<br><br>", unsafe_allow_html=True)
-if "reset_key" not in st.session_state:
-    st.session_state.reset_key = str(uuid.uuid4())
+signals = get_signals()
 
-with st.expander("➕ DIFFUSER UN SIGNAL", expanded=True):
-    t_signal = st.text_input("Titre (Optionnel)", key=f"t_{st.session_state.reset_key}")
-    m_type = st.radio("Type de signal", ["Texte", "Média", "Vocal"], horizontal=True)
+for _, row in signals.iterrows():
+    with st.container():
+        st.markdown(f'<div class="msg-box">', unsafe_allow_html=True)
+        st.markdown(f'<div class="meta"><span class="sender-id">{row["sender"]}</span> @ {row["timestamp"][:16]}</div>', unsafe_allow_html=True)
+        
+        try:
+            # Reconstruction des fragments
+            frags = row["frags"].split(b"||")
+            raw_data = ENGINE.unpack(row["key"], frags)
+            
+            if "text" in row["m_type"]:
+                st.write(raw_data.decode())
+            elif "image" in row["m_type"]:
+                st.image(raw_data)
+            elif "video" in row["m_type"]:
+                st.video(raw_data)
+            elif "audio" in row["m_type"]:
+                st.audio(raw_data)
+        except:
+            st.error("SIGNAL CORROMPU OU CLÉ INVALIDE")
+            
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    if m_type == "Texte":
-        txt = st.text_area("Votre message...", key=f"m_{st.session_state.reset_key}")
-        if st.button("ENVOYER"):
-            if txt:
-                k, frags = ENGINE.encrypt_triadic(txt.encode())
-                DB["FLUX"][sid].append({
-                    "id": str(uuid.uuid4()), "sender": st.session_state.uid,
-                    "k": k, "frags": frags, "is_txt": True, "type": "text",
-                    "time": time.strftime("%H:%M")
-                })
-                st.session_state.reset_key = str(uuid.uuid4())
-                st.rerun()
-
-    elif m_type == "Média":
-        file = st.file_uploader("Image ou Vidéo", key=f"f_{st.session_state.reset_key}")
-        if file and st.button("DIFFUSER MÉDIA"):
-            k, frags = ENGINE.encrypt_triadic(file.getvalue())
-            DB["FLUX"][sid].append({
-                "id": str(uuid.uuid4()), "sender": st.session_state.uid,
-                "k": k, "frags": frags, "is_txt": False, "type": file.type,
-                "time": time.strftime("%H:%M")
-            })
-            st.session_state.reset_key = str(uuid.uuid4())
-            st.rerun()
-
-    elif m_type == "Vocal":
-        audio = st.audio_input("Microphone", key=f"a_{st.session_state.reset_key}")
-        if audio and st.button("DIFFUSER VOCAL"):
-            k, frags = ENGINE.encrypt_triadic(audio.getvalue())
-            DB["FLUX"][sid].append({
-                "id": str(uuid.uuid4()), "sender": st.session_state.uid,
-                "k": k, "frags": frags, "is_txt": False, "type": "audio/wav",
-                "time": time.strftime("%H:%M")
-            })
-            st.session_state.reset_key = str(uuid.uuid4())
-            st.rerun()
-
-# Rafraîchissement automatique pour voir les messages des autres
-time.sleep(5)
+# Rafraîchissement intelligent
+time.sleep(10)
 st.rerun()
