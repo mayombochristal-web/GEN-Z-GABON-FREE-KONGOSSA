@@ -6,54 +6,27 @@ import uuid
 import base64
 
 # =====================================================
-# CONFIGURATION & STYLE GEN Z GABON
+# 1. CONFIGURATION (IMPERATIF EN PREMIER)
 # =====================================================
 st.set_page_config(page_title="FREE-KONGOSSA V13", page_icon="🛰️", layout="centered")
 
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;600;900&display=swap');
-.stApp { background:#050505; color:white; font-family:'Outfit', sans-serif; }
-
-/* Structure des Bulles de Chat */
-.chat-container { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
-.message-row { display: flex; width: 100%; margin-bottom: 10px; }
-.msg-me { justify-content: flex-end; }
-.msg-them { justify-content: flex-start; }
-
-.bubble {
-    max-width: 80%; padding: 12px 16px; border-radius: 18px;
-    position: relative; font-size: 0.95em; line-height: 1.4;
-}
-.bubble-me { background: #00ffaa; color: black; border-bottom-right-radius: 2px; }
-.bubble-them { background: #1a1a1a; color: white; border: 1px solid #333; border-bottom-left-radius: 2px; }
-
-.meta { font-size: 0.7em; margin-top: 5px; opacity: 0.6; display: block; }
-.user-id { font-weight: 900; font-size: 0.75em; color: #00ffaa; margin-bottom: 4px; display: block; }
-.meta-me { color: #004422; text-align: right; }
-
-/* Badge présence */
-.presence-badge {
-    background: #00ffaa22; color: #00ffaa; border: 1px solid #00ffaa;
-    padding: 4px 12px; border-radius: 20px; font-size: 0.8em; font-weight: bold;
-}
-</style>
-""", unsafe_allow_html=True)
-
 # =====================================================
-# MOTEUR TTU-MC3 & CACHE
+# 2. CACHE GLOBAL (LE TUNNEL COMMUN)
 # =====================================================
 @st.cache_resource
-def init_vault():
+def get_shared_db():
+    # Cette base est partagée entre TOUS les utilisateurs du serveur
     return {
-        "FLUX": {},
-        "PRESENCE": {}, # {user_id: last_seen_timestamp}
-        "REACTIONS": {},
-        "LAST_SYNC": time.time()
+        "FLUX": {},        # Contenu des messages
+        "PRESENCE": {},    # Utilisateurs actifs
+        "HISTORY": set()   # Anti-doublons
     }
 
-DB = init_vault()
+DB = get_shared_db()
 
+# =====================================================
+# 3. MOTEUR DE CHIFFREMENT TTU
+# =====================================================
 class TTUEngine:
     @staticmethod
     def tunnel_id(key):
@@ -73,51 +46,76 @@ class TTUEngine:
 ENGINE = TTUEngine()
 
 # =====================================================
-# SESSION & AUTHENTIFICATION
-# =====================================
+# 4. DESIGN SOUVERAIN
+# =====================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;600;900&display=swap');
+.stApp { background:#050505; color:white; font-family:'Outfit', sans-serif; }
+.msg-card {
+    background: #111; padding: 15px; border-radius: 15px;
+    margin-bottom: 15px; border: 1px solid #222;
+}
+.msg-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.user-tag { color: #00ffaa; font-weight: 900; font-size: 0.8em; }
+.time-tag { opacity: 0.5; font-size: 0.7em; }
+.presence-info { background: #00ffaa11; color: #00ffaa; padding: 5px 15px; border-radius: 20px; font-weight: bold; border: 1px solid #00ffaa; }
+</style>
+""", unsafe_allow_html=True)
+
+# =====================================================
+# 5. SESSION & AUTH
+# =====================================================
 if "uid" not in st.session_state:
-    st.session_state.uid = f"Z-{str(uuid.uuid4())[:4]}" # Identifiant unique de l'appareil
+    st.session_state.uid = f"Z-{str(uuid.uuid4())[:4]}"
 
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
 if not st.session_state.auth:
-    st.markdown("<h1 style='text-align:center;'>🛰️ FREE-KONGOSSA</h1>", unsafe_allow_html=True)
-    key = st.text_input("Code Secret du Tunnel", type="password")
-    if st.button("OUVRIR LE SIGNAL"):
+    st.title("🛰️ ACCÈS TUNNEL")
+    key = st.text_input("Entrez le code secret", type="password")
+    if st.button("OUVRIR LE FLUX"):
         sid = ENGINE.tunnel_id(key)
         if sid:
-            st.session_state.sid, st.session_state.auth = sid, True
+            st.session_state.sid = sid
+            st.session_state.auth = True
             st.rerun()
     st.stop()
 
 sid = st.session_state.sid
-if sid not in DB["FLUX"]: DB["FLUX"][sid] = []
+if sid not in DB["FLUX"]:
+    DB["FLUX"][sid] = []
 
-# Update Présence (TST Sync)
+# Mise à jour de la présence (Qui est là ?)
 DB["PRESENCE"][st.session_state.uid] = time.time()
-active_users = [u for u, t in DB["PRESENCE"].items() if time.time() - t < 15]
+active_count = len([u for u, t in DB["PRESENCE"].items() if time.time() - t < 20])
 
 # =====================================================
-# INTERFACE DE CONVERSATION
+# 6. AFFICHAGE DES MESSAGES (FIL PUBLIC)
 # =====================================================
-cols = st.columns([2, 1])
-cols[0].title("💬 Tunnel Flux")
-cols[1].markdown(f"<div style='text-align:right; margin-top:25px;'><span class='presence-badge'>🟢 {len(active_users)} Actifs</span></div>", unsafe_allow_html=True)
+c1, c2 = st.columns([2,1])
+c1.title("💬 Flux Public")
+c2.markdown(f"<br><span class='presence-info'>🟢 {active_count} ACTIFS</span>", unsafe_allow_html=True)
 
-# Affichage des messages organisés
 st.markdown("---")
-for p in DB["FLUX"][sid]:
-    is_me = p["sender"] == st.session_state.uid
-    row_class = "msg-me" if is_me else "msg-them"
-    bubble_class = "bubble-me" if is_me else "bubble-them"
-    meta_class = "meta-me" if is_me else ""
 
+# On affiche TOUS les messages contenus dans DB["FLUX"][sid]
+messages = DB["FLUX"][sid]
+
+if not messages:
+    st.info("Le tunnel est vide. Soyez le premier à briser le silence.")
+
+for p in reversed(messages):
+    is_me = p["sender"] == st.session_state.uid
+    border_color = "#00ffaa" if is_me else "#444"
+    
     st.markdown(f"""
-    <div class="message-row {row_class}">
-        <div class="bubble {bubble_class}">
-            {f'<span class="user-id">{p["sender"]}</span>' if not is_me else ""}
-            <div class="content">
+    <div class="msg-card" style="border-left: 5px solid {border_color};">
+        <div class="msg-header">
+            <span class="user-tag">{"VOUS" if is_me else p['sender']}</span>
+            <span class="time-tag">{p['time']}</span>
+        </div>
     """, unsafe_allow_html=True)
 
     try:
@@ -129,40 +127,37 @@ for p in DB["FLUX"][sid]:
             elif "video" in p["type"]: st.video(raw)
             elif "audio" in p["type"]: st.audio(raw)
     except:
-        st.error("Signal corrompu")
-
-    st.markdown(f"""
-            </div>
-            <span class="meta {meta_class}">{p['time']}</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+        st.error("Échec de déchiffrement du signal")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =====================================================
-# EMISSION (STATION DE SIGNAL)
+# 7. ENVOI DE MESSAGE
 # =====================================================
 st.markdown("<br><br>", unsafe_allow_html=True)
-if "reset_key" not in st.session_state: st.session_state.reset_key = str(uuid.uuid4())
+if "reset_key" not in st.session_state:
+    st.session_state.reset_key = str(uuid.uuid4())
 
-with st.container():
-    tabs = st.tabs(["💬 Texte", "📸 Média", "🎙️ Vocal"])
-    
-    with tabs[0]:
-        with st.form("text_form", clear_on_submit=True):
-            txt = st.text_area("Message secret...", placeholder="Raconte ici...")
-            if st.form_submit_button("DIFFUSER"):
-                if txt:
-                    k, frags = ENGINE.encrypt_triadic(txt.encode())
-                    DB["FLUX"][sid].append({
-                        "id": str(uuid.uuid4()), "sender": st.session_state.uid,
-                        "k": k, "frags": frags, "is_txt": True, "type": "text",
-                        "time": time.strftime("%H:%M")
-                    })
-                    st.rerun()
+with st.expander("➕ DIFFUSER UN SIGNAL", expanded=True):
+    t_signal = st.text_input("Titre (Optionnel)", key=f"t_{st.session_state.reset_key}")
+    m_type = st.radio("Type de signal", ["Texte", "Média", "Vocal"], horizontal=True)
 
-    with tabs[1]:
-        file = st.file_uploader("Image/Vidéo", key=f"file_{st.session_state.reset_key}")
-        if file and st.button("Envoyer Média"):
+    if m_type == "Texte":
+        txt = st.text_area("Votre message...", key=f"m_{st.session_state.reset_key}")
+        if st.button("ENVOYER"):
+            if txt:
+                k, frags = ENGINE.encrypt_triadic(txt.encode())
+                DB["FLUX"][sid].append({
+                    "id": str(uuid.uuid4()), "sender": st.session_state.uid,
+                    "k": k, "frags": frags, "is_txt": True, "type": "text",
+                    "time": time.strftime("%H:%M")
+                })
+                st.session_state.reset_key = str(uuid.uuid4())
+                st.rerun()
+
+    elif m_type == "Média":
+        file = st.file_uploader("Image ou Vidéo", key=f"f_{st.session_state.reset_key}")
+        if file and st.button("DIFFUSER MÉDIA"):
             k, frags = ENGINE.encrypt_triadic(file.getvalue())
             DB["FLUX"][sid].append({
                 "id": str(uuid.uuid4()), "sender": st.session_state.uid,
@@ -172,9 +167,9 @@ with st.container():
             st.session_state.reset_key = str(uuid.uuid4())
             st.rerun()
 
-    with tabs[2]:
-        audio = st.audio_input("Microphone", key=f"audio_{st.session_state.reset_key}")
-        if audio and st.button("🚀 Diffuser Vocal"):
+    elif m_type == "Vocal":
+        audio = st.audio_input("Microphone", key=f"a_{st.session_state.reset_key}")
+        if audio and st.button("DIFFUSER VOCAL"):
             k, frags = ENGINE.encrypt_triadic(audio.getvalue())
             DB["FLUX"][sid].append({
                 "id": str(uuid.uuid4()), "sender": st.session_state.uid,
@@ -184,6 +179,6 @@ with st.container():
             st.session_state.reset_key = str(uuid.uuid4())
             st.rerun()
 
-# Sync Auto (GHOST REFRESH)
+# Rafraîchissement automatique pour voir les messages des autres
 time.sleep(5)
 st.rerun()
