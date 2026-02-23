@@ -1,143 +1,182 @@
 import streamlit as st
-import hashlib
-import secrets
-import time
-import json
-import uuid
+from cryptography.fernet import Fernet
+import hashlib, time, uuid, base64, json
 
 # =====================================================
-# CONFIG
+# CONFIG GEN-Z GABON
 # =====================================================
-
 st.set_page_config(
-    page_title="GEN-Z GABON FREE-KONGOSSA",
-    page_icon="🌍",
+    page_title="GEN-Z GABON • FREE-KONGOSSA V16",
+    page_icon="🇬🇦",
     layout="centered"
 )
 
 # =====================================================
-# SHARED GLOBAL DB (V16 CORE — DISTANCE OK)
+# NODE DATABASE (SOVEREIGN NODE)
 # =====================================================
-
 @st.cache_resource
-def get_db():
+def NODE():
     return {
-        "MESSAGES": [],
+        "TUNNELS": {},
+        "CHAIN": {},
         "PRESENCE": {},
-        "SEEN": set()
+        "PUBLIC": []
     }
 
-DB = get_db()
+NODE = NODE()
 
 # =====================================================
-# IDENTITY (V20 IMPROVED)
+# SOVEREIGN ENGINE
 # =====================================================
+class SOVEREIGN:
 
-if "identity" not in st.session_state:
-    private = secrets.token_hex(32)
-    public = hashlib.sha256(private.encode()).hexdigest()
+    @staticmethod
+    def tunnel(secret):
+        return hashlib.sha256(secret.encode()).hexdigest()[:20]
 
-    st.session_state.identity = {
-        "private": private,
-        "public": public
-    }
+    @staticmethod
+    def key(secret):
+        k=hashlib.pbkdf2_hmac(
+            "sha256",
+            secret.encode(),
+            b"GABON-SOVEREIGN",
+            150000
+        )
+        return base64.urlsafe_b64encode(k[:32])
 
-UID = st.session_state.identity["public"][:10]
+    @staticmethod
+    def encrypt(secret,data):
+        f=Fernet(SOVEREIGN.key(secret))
+        c=f.encrypt(data)
+        n=len(c)
+        return [c[:n//3],c[n//3:2*n//3],c[2*n//3:]]
 
-# =====================================================
-# SIGNATURE
-# =====================================================
-
-def sign(payload):
-    raw = json.dumps(payload, sort_keys=True)
-    return hashlib.sha256(
-        (raw + st.session_state.identity["private"]).encode()
-    ).hexdigest()
-
-# =====================================================
-# PRESENCE SYSTEM
-# =====================================================
-
-DB["PRESENCE"][UID] = time.time()
-
-active = len([
-    u for u, t in DB["PRESENCE"].items()
-    if time.time() - t < 20
-])
+    @staticmethod
+    def decrypt(secret,frags):
+        f=Fernet(SOVEREIGN.key(secret))
+        return f.decrypt(b"".join(frags))
 
 # =====================================================
-# UI HEADER
+# SESSION GEN-Z
 # =====================================================
+if "uid" not in st.session_state:
+    nick=st.text_input("Pseudo GEN-Z 🇬🇦")
+    if nick:
+        st.session_state.uid=f"🇬🇦{nick}#{uuid.uuid4().hex[:3]}"
+        st.rerun()
+    st.stop()
 
-c1, c2 = st.columns([3,1])
+# =====================================================
+# AUTH TUNNEL
+# =====================================================
+secret=st.text_input("Code Tunnel",type="password")
 
-c1.title("🌍 GEN-Z GABON FREE-KONGOSSA")
-c2.metric("🟢 ACTIFS", active)
+if not secret:
+    st.stop()
 
-st.caption(f"Node : {UID}")
+sid=SOVEREIGN.tunnel(secret)
 
+if sid not in NODE["TUNNELS"]:
+    NODE["TUNNELS"][sid]=[]
+    NODE["CHAIN"][sid]=b"GENESIS"
+
+# =====================================================
+# PRESENCE
+# =====================================================
+now=time.time()
+NODE["PRESENCE"][st.session_state.uid]=now
+NODE["PRESENCE"]={
+u:t for u,t in NODE["PRESENCE"].items()
+if now-t<30
+}
+
+active=len(NODE["PRESENCE"])
+
+st.title("🇬🇦 FREE-KONGOSSA — SOVEREIGN")
+
+st.caption(f"🟢 {active} actifs | Node Local")
+
+# =====================================================
+# DISPLAY
+# =====================================================
+for m in reversed(NODE["TUNNELS"][sid]):
+    try:
+        raw=SOVEREIGN.decrypt(secret,m["f"])
+        st.caption(m["u"])
+
+        if m["t"]=="text":
+            st.write(raw.decode())
+        elif "image" in m["t"]:
+            st.image(raw)
+        elif "video" in m["t"]:
+            st.video(raw)
+        else:
+            st.audio(raw)
+
+    except:
+        pass
+
+# =====================================================
+# SEND
+# =====================================================
+mode=st.radio("Signal",["Texte","Média","Vocal"],horizontal=True)
+
+def push(data,typ):
+
+    frags=SOVEREIGN.encrypt(secret,data)
+
+    prev=NODE["CHAIN"][sid]
+    chain=hashlib.sha256(prev+data).digest()
+    NODE["CHAIN"][sid]=chain
+
+    NODE["TUNNELS"][sid].append({
+        "u":st.session_state.uid,
+        "f":frags,
+        "t":typ,
+        "ts":time.time()
+    })
+
+if mode=="Texte":
+    txt=st.text_area("Message")
+    if st.button("Envoyer"):
+        push(txt.encode(),"text")
+        st.rerun()
+
+elif mode=="Média":
+    f=st.file_uploader("Upload")
+    if f and st.button("Diffuser"):
+        push(f.getvalue(),f.type)
+        st.rerun()
+
+elif mode=="Vocal":
+    a=st.audio_input("Micro")
+    if a and st.button("Vocal"):
+        push(a.getvalue(),"audio/wav")
+        st.rerun()
+
+# =====================================================
+# SOVEREIGN SYNC EXPORT
+# =====================================================
 st.divider()
+st.subheader("🌐 Sync Souverain")
 
-# =====================================================
-# DISPLAY MESSAGES
-# =====================================================
+export_data=json.dumps(NODE["TUNNELS"][sid])
+st.download_button(
+    "⬇️ Export Tunnel",
+    export_data,
+    file_name="kongossa_sync.json"
+)
 
-if not DB["MESSAGES"]:
-    st.info("Tunnel silencieux...")
+imp=st.file_uploader("Importer Sync")
 
-for msg in reversed(DB["MESSAGES"]):
-
-    mine = msg["author"] == UID
-    color = "#00ffaa" if mine else "#444"
-
-    st.markdown(
-        f"""
-        <div style="
-        background:#111;
-        padding:12px;
-        border-radius:12px;
-        margin-bottom:10px;
-        border-left:5px solid {color};
-        ">
-        <b>{"VOUS" if mine else msg["author"]}</b><br>
-        {msg["text"]}
-        <br><small>{msg["time"]}</small>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-# =====================================================
-# SEND MESSAGE
-# =====================================================
-
-st.divider()
-
-msg = st.text_input("💬 Ton kongossa")
-
-if st.button("Envoyer") and msg:
-
-    payload = {
-        "author": UID,
-        "text": msg,
-        "time": time.strftime("%H:%M")
-    }
-
-    payload["signature"] = sign(payload)
-
-    mid = hashlib.sha256(
-        json.dumps(payload).encode()
-    ).hexdigest()
-
-    if mid not in DB["SEEN"]:
-        DB["SEEN"].add(mid)
-        DB["MESSAGES"].append(payload)
-
+if imp:
+    incoming=json.load(imp)
+    NODE["TUNNELS"][sid].extend(incoming)
+    st.success("Fusion Node OK")
     st.rerun()
 
 # =====================================================
-# AUTO REFRESH (GLOBAL REALTIME)
+# REFRESH ADAPTATIF
 # =====================================================
-
-time.sleep(3)
+time.sleep(4)
 st.rerun()
