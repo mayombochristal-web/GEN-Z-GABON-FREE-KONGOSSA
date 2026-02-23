@@ -1,172 +1,117 @@
 import streamlit as st
 from cryptography.fernet import Fernet
-import hashlib, time, uuid, base64, os
+import hashlib, time, uuid, base64, json
 
 # =====================================================
-# CONFIG
+# CONFIG GEN-Z GABON
 # =====================================================
 st.set_page_config(
-    page_title="FREE-KONGOSSA V15 GODMODE",
-    page_icon="🛰️",
+    page_title="GEN-Z GABON • FREE-KONGOSSA V16",
+    page_icon="🇬🇦",
     layout="centered"
 )
 
 # =====================================================
-# SHARED MEMORY
+# NODE DATABASE (SOVEREIGN NODE)
 # =====================================================
 @st.cache_resource
-def DB():
+def NODE():
     return {
-        "FLUX": {},
-        "PRESENCE": {},
+        "TUNNELS": {},
         "CHAIN": {},
-        "SIGN": set()
+        "PRESENCE": {},
+        "PUBLIC": []
     }
 
-DB = DB()
+NODE = NODE()
 
 # =====================================================
-# GODMODE ENGINE
+# SOVEREIGN ENGINE
 # =====================================================
-class GOD:
+class SOVEREIGN:
 
     @staticmethod
     def tunnel(secret):
-        return hashlib.sha256(secret.encode()).hexdigest()[:18]
+        return hashlib.sha256(secret.encode()).hexdigest()[:20]
 
-    # ---- initial key ----
     @staticmethod
-    def seed(secret):
-        k = hashlib.pbkdf2_hmac(
+    def key(secret):
+        k=hashlib.pbkdf2_hmac(
             "sha256",
             secret.encode(),
-            b"GODMODE",
-            120000
+            b"GABON-SOVEREIGN",
+            150000
         )
-        return k
-
-    # ---- evolving key ----
-    @staticmethod
-    def evolve(key, payload):
-        return hashlib.sha256(key + payload).digest()
+        return base64.urlsafe_b64encode(k[:32])
 
     @staticmethod
-    def fernet_key(key):
-        return base64.urlsafe_b64encode(key[:32])
-
-    # ---- encrypt ----
-    @staticmethod
-    def encrypt(key, data):
-
-        f = Fernet(GOD.fernet_key(key))
-        box = f.encrypt(data)
-
-        n=len(box)
-        return [
-            box[:n//3],
-            box[n//3:2*n//3],
-            box[2*n//3:]
-        ]
+    def encrypt(secret,data):
+        f=Fernet(SOVEREIGN.key(secret))
+        c=f.encrypt(data)
+        n=len(c)
+        return [c[:n//3],c[n//3:2*n//3],c[2*n//3:]]
 
     @staticmethod
-    def decrypt(key, frags):
-        f = Fernet(GOD.fernet_key(key))
+    def decrypt(secret,frags):
+        f=Fernet(SOVEREIGN.key(secret))
         return f.decrypt(b"".join(frags))
 
 # =====================================================
-# SESSION
+# SESSION GEN-Z
 # =====================================================
 if "uid" not in st.session_state:
-    st.session_state.uid=f"Z-{uuid.uuid4().hex[:4]}"
-
-if "auth" not in st.session_state:
-    st.session_state.auth=False
-
-# =====================================================
-# AUTH
-# =====================================================
-if not st.session_state.auth:
-
-    st.title("🛰️ FREE-KONGOSSA GODMODE")
-
-    s=st.text_input("Code Tunnel",type="password")
-    ghost=st.checkbox("👁️ Mode Fantôme")
-
-    if st.button("ENTRER"):
-        if s:
-            st.session_state.secret=s
-            st.session_state.sid=GOD.tunnel(s)
-            st.session_state.key=GOD.seed(s)
-            st.session_state.ghost=ghost
-            st.session_state.auth=True
-            st.rerun()
-
+    nick=st.text_input("Pseudo GEN-Z 🇬🇦")
+    if nick:
+        st.session_state.uid=f"🇬🇦{nick}#{uuid.uuid4().hex[:3]}"
+        st.rerun()
     st.stop()
 
-sid=st.session_state.sid
-secret=st.session_state.secret
+# =====================================================
+# AUTH TUNNEL
+# =====================================================
+secret=st.text_input("Code Tunnel",type="password")
 
-if sid not in DB["FLUX"]:
-    DB["FLUX"][sid]=[]
-    DB["CHAIN"][sid]=b"GENESIS"
+if not secret:
+    st.stop()
+
+sid=SOVEREIGN.tunnel(secret)
+
+if sid not in NODE["TUNNELS"]:
+    NODE["TUNNELS"][sid]=[]
+    NODE["CHAIN"][sid]=b"GENESIS"
 
 # =====================================================
 # PRESENCE
 # =====================================================
 now=time.time()
-
-if not st.session_state.ghost:
-    DB["PRESENCE"][st.session_state.uid]=now
-
-DB["PRESENCE"]={
-u:t for u,t in DB["PRESENCE"].items()
+NODE["PRESENCE"][st.session_state.uid]=now
+NODE["PRESENCE"]={
+u:t for u,t in NODE["PRESENCE"].items()
 if now-t<30
 }
 
-active=len(DB["PRESENCE"])
+active=len(NODE["PRESENCE"])
 
-# =====================================================
-# AUTO CLEAN TTL
-# =====================================================
-TTL=180
+st.title("🇬🇦 FREE-KONGOSSA — SOVEREIGN")
 
-DB["FLUX"][sid]=[
-m for m in DB["FLUX"][sid]
-if now<m["exp"]
-]
-
-# =====================================================
-# HEADER
-# =====================================================
-c1,c2=st.columns([3,1])
-c1.title("💬 GODMODE TUNNEL")
-c2.metric("ACTIFS",active)
+st.caption(f"🟢 {active} actifs | Node Local")
 
 # =====================================================
 # DISPLAY
 # =====================================================
-activity=0
-
-for m in reversed(DB["FLUX"][sid]):
-
+for m in reversed(NODE["TUNNELS"][sid]):
     try:
-        raw=GOD.decrypt(m["key"],m["frags"])
-        activity+=1
+        raw=SOVEREIGN.decrypt(secret,m["f"])
+        st.caption(m["u"])
 
-        st.markdown("----")
-        st.caption("VOUS" if m["sender"]==st.session_state.uid else m["sender"])
-
-        if m["type"]=="text":
+        if m["t"]=="text":
             st.write(raw.decode())
-        elif "image" in m["type"]:
+        elif "image" in m["t"]:
             st.image(raw)
-        elif "video" in m["type"]:
+        elif "video" in m["t"]:
             st.video(raw)
         else:
             st.audio(raw)
-
-        remain=int(m["exp"]-time.time())
-        st.caption(f"⏳ {remain}s")
 
     except:
         pass
@@ -176,57 +121,62 @@ for m in reversed(DB["FLUX"][sid]):
 # =====================================================
 mode=st.radio("Signal",["Texte","Média","Vocal"],horizontal=True)
 
-def send(data,typ):
+def push(data,typ):
 
-    key=st.session_state.key
+    frags=SOVEREIGN.encrypt(secret,data)
 
-    # evolve key
-    new_key=GOD.evolve(key,data)
-    st.session_state.key=new_key
-
-    frags=GOD.encrypt(new_key,data)
-
-    # chain integrity
-    prev=DB["CHAIN"][sid]
+    prev=NODE["CHAIN"][sid]
     chain=hashlib.sha256(prev+data).digest()
-    DB["CHAIN"][sid]=chain
+    NODE["CHAIN"][sid]=chain
 
-    sig=hashlib.sha256(chain).hexdigest()
-    if sig in DB["SIGN"]:
-        return
-
-    DB["SIGN"].add(sig)
-
-    DB["FLUX"][sid].append({
-        "sender":st.session_state.uid,
-        "frags":frags,
-        "type":typ,
-        "key":new_key,
-        "exp":time.time()+TTL
+    NODE["TUNNELS"][sid].append({
+        "u":st.session_state.uid,
+        "f":frags,
+        "t":typ,
+        "ts":time.time()
     })
 
 if mode=="Texte":
-    t=st.text_area("Message")
-    if st.button("ENVOYER"):
-        if t:
-            send(t.encode(),"text")
-            st.rerun()
+    txt=st.text_area("Message")
+    if st.button("Envoyer"):
+        push(txt.encode(),"text")
+        st.rerun()
 
 elif mode=="Média":
     f=st.file_uploader("Upload")
-    if f and st.button("DIFFUSER"):
-        send(f.getvalue(),f.type)
+    if f and st.button("Diffuser"):
+        push(f.getvalue(),f.type)
         st.rerun()
 
 elif mode=="Vocal":
     a=st.audio_input("Micro")
-    if a and st.button("ENVOYER VOCAL"):
-        send(a.getvalue(),"audio/wav")
+    if a and st.button("Vocal"):
+        push(a.getvalue(),"audio/wav")
         st.rerun()
 
 # =====================================================
-# SMART REFRESH
+# SOVEREIGN SYNC EXPORT
 # =====================================================
-delay=2 if activity>5 else 5
-time.sleep(delay)
+st.divider()
+st.subheader("🌐 Sync Souverain")
+
+export_data=json.dumps(NODE["TUNNELS"][sid])
+st.download_button(
+    "⬇️ Export Tunnel",
+    export_data,
+    file_name="kongossa_sync.json"
+)
+
+imp=st.file_uploader("Importer Sync")
+
+if imp:
+    incoming=json.load(imp)
+    NODE["TUNNELS"][sid].extend(incoming)
+    st.success("Fusion Node OK")
+    st.rerun()
+
+# =====================================================
+# REFRESH ADAPTATIF
+# =====================================================
+time.sleep(4)
 st.rerun()
