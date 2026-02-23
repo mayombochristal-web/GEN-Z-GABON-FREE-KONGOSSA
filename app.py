@@ -1,9 +1,9 @@
 import streamlit as st
-import json
 import hashlib
 import secrets
 import time
-from pathlib import Path
+import json
+import uuid
 
 # =====================================================
 # CONFIG
@@ -15,202 +15,129 @@ st.set_page_config(
     layout="centered"
 )
 
-DATA = Path("mesh_data")
-DATA.mkdir(exist_ok=True)
-
-IDENTITY_FILE = DATA / "identity.json"
-LOG_FILE = DATA / "events.json"
-
 # =====================================================
-# SAFE JSON (ANTI CRASH V17/V18)
+# SHARED GLOBAL DB (V16 CORE — DISTANCE OK)
 # =====================================================
 
-def safe_load(path):
+@st.cache_resource
+def get_db():
+    return {
+        "MESSAGES": [],
+        "PRESENCE": {},
+        "SEEN": set()
+    }
 
-    if not path.exists():
-        return []
-
-    raw = path.read_bytes()
-
-    for enc in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            return json.loads(raw.decode(enc))
-        except:
-            pass
-
-    return []
-
-
-def safe_save(data, path):
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
+DB = get_db()
 
 # =====================================================
-# IDENTITY (V16 STABLE STYLE)
+# IDENTITY (V20 IMPROVED)
 # =====================================================
 
-def load_identity():
+if "identity" not in st.session_state:
+    private = secrets.token_hex(32)
+    public = hashlib.sha256(private.encode()).hexdigest()
 
-    if not IDENTITY_FILE.exists():
+    st.session_state.identity = {
+        "private": private,
+        "public": public
+    }
 
-        private_key = secrets.token_hex(32)
-        public_key = hashlib.sha256(
-            private_key.encode()
-        ).hexdigest()
-
-        identity = {
-            "public_key": public_key,
-            "private_key": private_key
-        }
-
-        safe_save(identity, IDENTITY_FILE)
-        return identity
-
-    return json.loads(
-        IDENTITY_FILE.read_text(encoding="utf-8")
-    )
-
-
-IDENTITY = load_identity()
+UID = st.session_state.identity["public"][:10]
 
 # =====================================================
 # SIGNATURE
 # =====================================================
 
 def sign(payload):
-
     raw = json.dumps(payload, sort_keys=True)
-
     return hashlib.sha256(
-        (raw + IDENTITY["private_key"]).encode()
+        (raw + st.session_state.identity["private"]).encode()
     ).hexdigest()
 
 # =====================================================
-# EVENT LOG (AFRICAN MESH SIMPLE)
+# PRESENCE SYSTEM
 # =====================================================
 
-def append_event(event):
+DB["PRESENCE"][UID] = time.time()
 
-    log = safe_load(LOG_FILE)
-
-    event["timestamp"] = time.time()
-
-    event["id"] = hashlib.sha256(
-        json.dumps(event, sort_keys=True).encode()
-    ).hexdigest()
-
-    log.append(event)
-
-    safe_save(log, LOG_FILE)
-
-
-def rebuild_state():
-
-    log = safe_load(LOG_FILE)
-
-    state = {"messages": []}
-
-    for e in log:
-        if e.get("type") == "message":
-            state["messages"].append(e)
-
-    return state
+active = len([
+    u for u, t in DB["PRESENCE"].items()
+    if time.time() - t < 20
+])
 
 # =====================================================
-# MERGE PEER STATE
+# UI HEADER
 # =====================================================
 
-def merge(local, remote):
+c1, c2 = st.columns([3,1])
 
-    seen = set()
-    merged = []
+c1.title("🌍 GEN-Z GABON FREE-KONGOSSA")
+c2.metric("🟢 ACTIFS", active)
 
-    for m in local["messages"] + remote.get("messages", []):
-        if m["id"] not in seen:
-            merged.append(m)
-            seen.add(m["id"])
+st.caption(f"Node : {UID}")
 
-    return {"messages": merged}
+st.divider()
 
 # =====================================================
-# UI
+# DISPLAY MESSAGES
 # =====================================================
 
-STATE = rebuild_state()
+if not DB["MESSAGES"]:
+    st.info("Tunnel silencieux...")
 
-st.title("🌍 GEN-Z GABON FREE-KONGOSSA V20")
-st.caption(f"Node ID : {IDENTITY['public_key'][:16]}")
+for msg in reversed(DB["MESSAGES"]):
+
+    mine = msg["author"] == UID
+    color = "#00ffaa" if mine else "#444"
+
+    st.markdown(
+        f"""
+        <div style="
+        background:#111;
+        padding:12px;
+        border-radius:12px;
+        margin-bottom:10px;
+        border-left:5px solid {color};
+        ">
+        <b>{"VOUS" if mine else msg["author"]}</b><br>
+        {msg["text"]}
+        <br><small>{msg["time"]}</small>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # =====================================================
 # SEND MESSAGE
 # =====================================================
+
+st.divider()
 
 msg = st.text_input("💬 Ton kongossa")
 
 if st.button("Envoyer") and msg:
 
     payload = {
-        "type": "message",
-        "author": IDENTITY["public_key"],
-        "data": {"text": msg}
+        "author": UID,
+        "text": msg,
+        "time": time.strftime("%H:%M")
     }
 
     payload["signature"] = sign(payload)
 
-    append_event(payload)
+    mid = hashlib.sha256(
+        json.dumps(payload).encode()
+    ).hexdigest()
 
-    st.success("Signal diffusé 📡")
+    if mid not in DB["SEEN"]:
+        DB["SEEN"].add(mid)
+        DB["MESSAGES"].append(payload)
+
     st.rerun()
 
 # =====================================================
-# DISPLAY
+# AUTO REFRESH (GLOBAL REALTIME)
 # =====================================================
 
-st.subheader("📡 Flux Mesh")
-
-if not STATE["messages"]:
-    st.info("Tunnel silencieux...")
-
-for m in reversed(STATE["messages"]):
-
-    st.markdown(
-        f"""
-        **{m['author'][:10]}**
-        > {m['data']['text']}
-        """
-    )
-
-# =====================================================
-# SYNC PEER (MANUEL MAIS STABLE)
-# =====================================================
-
-st.divider()
-st.subheader("🔄 Synchronisation Peer")
-
-remote_json = st.text_area("Coller état distant JSON")
-
-if st.button("Fusionner") and remote_json:
-
-    try:
-        remote = json.loads(remote_json)
-        STATE = merge(STATE, remote)
-
-        st.success("Fusion réussie ✅")
-
-    except:
-        st.error("JSON invalide")
-
-# =====================================================
-# EXPORT STATE
-# =====================================================
-
-if st.button("Exporter mon état réseau"):
-
-    st.download_button(
-        "Télécharger",
-        json.dumps(STATE, indent=2, ensure_ascii=False),
-        "mesh_state.json",
-        "application/json"
-    )
+time.sleep(3)
+st.rerun()
