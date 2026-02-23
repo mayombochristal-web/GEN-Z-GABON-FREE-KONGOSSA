@@ -135,15 +135,19 @@ for p in reversed(DB["FLUX"][sid]):
         st.markdown("</div>", unsafe_allow_html=True)
 
 # =====================================================
-# EMISSION DE SIGNAL
+# EMISSION DE SIGNAL (CORRECTIF MULTIPLICATION)
 # =====================================================
 st.markdown("---")
+# Utilisation d'un ID de session pour forcer le reset des inputs
+if "form_reset_key" not in st.session_state:
+    st.session_state.form_reset_key = str(uuid.uuid4())
+
 with st.expander("➕ ÉMETTRE UN NOUVEAU SIGNAL", expanded=False):
-    t_signal = st.text_input("Titre du Signal")
+    t_signal = st.text_input("Titre du Signal", key=f"title_{st.session_state.form_reset_key}")
     tabs = st.tabs(["💬 Texte", "📸 Média", "🎙️ Vocal"])
 
     with tabs[0]:
-        txt = st.text_area("Votre message")
+        txt = st.text_area("Votre message", key=f"txt_{st.session_state.form_reset_key}")
         if st.button("Diffuser Texte"):
             if txt:
                 data = txt.encode()
@@ -152,28 +156,34 @@ with st.expander("➕ ÉMETTRE UN NOUVEAU SIGNAL", expanded=False):
                     "id": str(uuid.uuid4()), "k": k, "frags": frags,
                     "is_txt": True, "type": "text", "title": t_signal, "ts": time.time()
                 })
+                st.session_state.form_reset_key = str(uuid.uuid4()) # Reset
                 st.rerun()
 
     with tabs[1]:
-        file = st.file_uploader("Fichier")
+        file = st.file_uploader("Fichier", key=f"file_{st.session_state.form_reset_key}")
         if file and st.button("Diffuser Média"):
             k, frags = ENGINE.encrypt_triadic(file.getvalue())
             DB["FLUX"][sid].append({
                 "id": str(uuid.uuid4()), "k": k, "frags": frags,
                 "is_txt": False, "type": file.type, "title": t_signal, "ts": time.time()
             })
+            st.session_state.form_reset_key = str(uuid.uuid4()) # Reset
             st.rerun()
 
     with tabs[2]:
-        audio = st.audio_input("Microphone")
+        # Le correctif majeur est ici : key dynamique et reset immédiat
+        audio = st.audio_input("Microphone", key=f"audio_{st.session_state.form_reset_key}")
         if audio:
-            k, frags = ENGINE.encrypt_triadic(audio.getvalue())
-            DB["FLUX"][sid].append({
-                "id": str(uuid.uuid4()), "k": k, "frags": frags,
-                "is_txt": False, "type": "audio/wav", "title": t_signal, "ts": time.time()
-            })
-            st.rerun()
+            if st.button("🚀 Confirmer la diffusion vocale"):
+                k, frags = ENGINE.encrypt_triadic(audio.getvalue())
+                DB["FLUX"][sid].append({
+                    "id": str(uuid.uuid4()), "k": k, "frags": frags,
+                    "is_txt": False, "type": "audio/wav", "title": t_signal, "ts": time.time()
+                })
+                st.session_state.form_reset_key = str(uuid.uuid4()) # Reset total des widgets
+                st.rerun()
 
 # GHOST REFRESH (TST SYNC)
-time.sleep(8)
-st.rerun()
+if time.time() - DB["LAST_UPDATE"] > 8:
+    DB["LAST_UPDATE"] = time.time()
+    st.rerun()
