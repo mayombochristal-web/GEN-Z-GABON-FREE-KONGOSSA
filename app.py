@@ -3,32 +3,32 @@ from cryptography.fernet import Fernet
 import hashlib, time, uuid, base64, json
 
 # =====================================================
-# CONFIG GEN-Z GABON
+# CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="GEN-Z GABON • FREE-KONGOSSA V16",
-    page_icon="🇬🇦",
+    page_title="🇬🇦 GEN-Z GABON • FREE_KONGOSSA V17.5",
+    page_icon="🌍",
     layout="centered"
 )
 
 # =====================================================
-# NODE DATABASE (SOVEREIGN NODE)
+# NODE DATABASE
 # =====================================================
 @st.cache_resource
 def NODE():
     return {
         "TUNNELS": {},
         "CHAIN": {},
-        "PRESENCE": {},
-        "PUBLIC": []
+        "KNOWN_HASHES": set(),
+        "NODE_ID": uuid.uuid4().hex[:6]
     }
 
 NODE = NODE()
 
 # =====================================================
-# SOVEREIGN ENGINE
+# CRYPTO ENGINE
 # =====================================================
-class SOVEREIGN:
+class HARD:
 
     @staticmethod
     def tunnel(secret):
@@ -36,147 +36,146 @@ class SOVEREIGN:
 
     @staticmethod
     def key(secret):
-        k=hashlib.pbkdf2_hmac(
+        k = hashlib.pbkdf2_hmac(
             "sha256",
             secret.encode(),
-            b"GABON-SOVEREIGN",
+            b"GENZ-GABON-HARDENED",
             150000
         )
         return base64.urlsafe_b64encode(k[:32])
 
     @staticmethod
     def encrypt(secret,data):
-        f=Fernet(SOVEREIGN.key(secret))
-        c=f.encrypt(data)
+        f = Fernet(HARD.key(secret))
+        c = f.encrypt(data)
         n=len(c)
         return [c[:n//3],c[n//3:2*n//3],c[2*n//3:]]
 
     @staticmethod
     def decrypt(secret,frags):
-        f=Fernet(SOVEREIGN.key(secret))
-        return f.decrypt(b"".join(frags))
+        return Fernet(HARD.key(secret)).decrypt(b"".join(frags))
 
 # =====================================================
-# SESSION GEN-Z
+# SERIALIZATION SAFE
+# =====================================================
+def serialize(messages):
+    safe=[]
+    for m in messages:
+        safe.append({
+            "u":m["u"],
+            "h":m["h"],
+            "f":[base64.b64encode(x).decode() for x in m["f"]]
+        })
+    return safe
+
+def deserialize(messages):
+    out=[]
+    for m in messages:
+        out.append({
+            "u":m["u"],
+            "h":m["h"],
+            "f":[base64.b64decode(x) for x in m["f"]]
+        })
+    return out
+
+# =====================================================
+# SESSION IDENTITY
 # =====================================================
 if "uid" not in st.session_state:
     nick=st.text_input("Pseudo GEN-Z 🇬🇦")
     if nick:
-        st.session_state.uid=f"🇬🇦{nick}#{uuid.uuid4().hex[:3]}"
+        st.session_state.uid=f"🇬🇦{nick}@{NODE['NODE_ID']}"
         st.rerun()
     st.stop()
 
 # =====================================================
-# AUTH TUNNEL
+# TUNNEL ACCESS
 # =====================================================
 secret=st.text_input("Code Tunnel",type="password")
-
 if not secret:
     st.stop()
 
-sid=SOVEREIGN.tunnel(secret)
+sid=HARD.tunnel(secret)
 
 if sid not in NODE["TUNNELS"]:
     NODE["TUNNELS"][sid]=[]
     NODE["CHAIN"][sid]=b"GENESIS"
 
-# =====================================================
-# PRESENCE
-# =====================================================
-now=time.time()
-NODE["PRESENCE"][st.session_state.uid]=now
-NODE["PRESENCE"]={
-u:t for u,t in NODE["PRESENCE"].items()
-if now-t<30
-}
-
-active=len(NODE["PRESENCE"])
-
-st.title("🇬🇦 FREE-KONGOSSA — SOVEREIGN")
-
-st.caption(f"🟢 {active} actifs | Node Local")
+st.title("🌍 GEN-Z GABON • FREE_KONGOSSA")
+st.caption(f"Node {NODE['NODE_ID']}")
 
 # =====================================================
 # DISPLAY
 # =====================================================
+activity=0
+
 for m in reversed(NODE["TUNNELS"][sid]):
     try:
-        raw=SOVEREIGN.decrypt(secret,m["f"])
+        raw=HARD.decrypt(secret,m["f"])
         st.caption(m["u"])
-
-        if m["t"]=="text":
-            st.write(raw.decode())
-        elif "image" in m["t"]:
-            st.image(raw)
-        elif "video" in m["t"]:
-            st.video(raw)
-        else:
-            st.audio(raw)
-
+        st.write(raw.decode())
+        activity+=1
     except:
         pass
 
 # =====================================================
-# SEND
+# SEND MESSAGE (LEDGER SECURE)
 # =====================================================
-mode=st.radio("Signal",["Texte","Média","Vocal"],horizontal=True)
+msg=st.text_area("Message")
 
-def push(data,typ):
+if st.button("Envoyer"):
+    if msg:
 
-    frags=SOVEREIGN.encrypt(secret,data)
+        fr=HARD.encrypt(secret,msg.encode())
 
-    prev=NODE["CHAIN"][sid]
-    chain=hashlib.sha256(prev+data).digest()
-    NODE["CHAIN"][sid]=chain
+        prev=NODE["CHAIN"][sid]
+        h=hashlib.sha256(prev+msg.encode()).hexdigest()
 
-    NODE["TUNNELS"][sid].append({
-        "u":st.session_state.uid,
-        "f":frags,
-        "t":typ,
-        "ts":time.time()
-    })
+        if h not in NODE["KNOWN_HASHES"]:
+            NODE["KNOWN_HASHES"].add(h)
 
-if mode=="Texte":
-    txt=st.text_area("Message")
-    if st.button("Envoyer"):
-        push(txt.encode(),"text")
-        st.rerun()
+            NODE["TUNNELS"][sid].append({
+                "u":st.session_state.uid,
+                "f":fr,
+                "h":h
+            })
 
-elif mode=="Média":
-    f=st.file_uploader("Upload")
-    if f and st.button("Diffuser"):
-        push(f.getvalue(),f.type)
-        st.rerun()
+            NODE["CHAIN"][sid]=bytes.fromhex(h)
 
-elif mode=="Vocal":
-    a=st.audio_input("Micro")
-    if a and st.button("Vocal"):
-        push(a.getvalue(),"audio/wav")
         st.rerun()
 
 # =====================================================
-# SOVEREIGN SYNC EXPORT
+# EXPORT / IMPORT (DIFFERENTIAL SYNC)
 # =====================================================
 st.divider()
-st.subheader("🌐 Sync Souverain")
+st.subheader("🌐 Mesh Sync")
 
-export_data=json.dumps(NODE["TUNNELS"][sid])
+export=json.dumps(serialize(NODE["TUNNELS"][sid]))
+
 st.download_button(
-    "⬇️ Export Tunnel",
-    export_data,
-    file_name="kongossa_sync.json"
+    "⬇️ Export Sync",
+    export,
+    file_name="free_kongossa_mesh.json"
 )
 
 imp=st.file_uploader("Importer Sync")
 
 if imp:
-    incoming=json.load(imp)
-    NODE["TUNNELS"][sid].extend(incoming)
-    st.success("Fusion Node OK")
+    incoming=deserialize(json.load(imp))
+
+    added=0
+    for m in incoming:
+        if m["h"] not in NODE["KNOWN_HASHES"]:
+            NODE["KNOWN_HASHES"].add(m["h"])
+            NODE["TUNNELS"][sid].append(m)
+            added+=1
+
+    st.success(f"{added} nouveaux messages synchronisés")
     st.rerun()
 
 # =====================================================
-# REFRESH ADAPTATIF
+# SMART REFRESH
 # =====================================================
-time.sleep(4)
+delay=2 if activity>5 else 4 if activity>1 else 7
+time.sleep(delay)
 st.rerun()
