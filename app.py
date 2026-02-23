@@ -1,257 +1,232 @@
 import streamlit as st
 from cryptography.fernet import Fernet
-import hashlib
-import time
-import uuid
-import base64
-import os
+import hashlib, time, uuid, base64, os
 
 # =====================================================
 # CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="FREE-KONGOSSA V14 ULTRA",
+    page_title="FREE-KONGOSSA V15 GODMODE",
     page_icon="🛰️",
     layout="centered"
 )
 
 # =====================================================
-# GLOBAL SHARED MEMORY
+# SHARED MEMORY
 # =====================================================
 @st.cache_resource
-def get_db():
+def DB():
     return {
         "FLUX": {},
         "PRESENCE": {},
-        "SIGNATURES": set()
+        "CHAIN": {},
+        "SIGN": set()
     }
 
-DB = get_db()
+DB = DB()
 
 # =====================================================
-# TTU ENGINE ULTRA
+# GODMODE ENGINE
 # =====================================================
-class TTUEngine:
+class GOD:
 
-    # ---- tunnel id ----
     @staticmethod
-    def tunnel_id(secret):
-        return hashlib.sha256(secret.encode()).hexdigest()[:16]
+    def tunnel(secret):
+        return hashlib.sha256(secret.encode()).hexdigest()[:18]
 
-    # ---- derive stable key ----
+    # ---- initial key ----
     @staticmethod
-    def derive_key(secret):
+    def seed(secret):
         k = hashlib.pbkdf2_hmac(
             "sha256",
             secret.encode(),
-            b"KONGOSSA-SALT",
-            100000
+            b"GODMODE",
+            120000
         )
-        return base64.urlsafe_b64encode(k[:32])
+        return k
 
-    # ---- triadic encryption ----
+    # ---- evolving key ----
     @staticmethod
-    def encrypt(secret, data):
+    def evolve(key, payload):
+        return hashlib.sha256(key + payload).digest()
 
-        key = TTUEngine.derive_key(secret)
-        box = Fernet(key).encrypt(data)
+    @staticmethod
+    def fernet_key(key):
+        return base64.urlsafe_b64encode(key[:32])
 
-        n = len(box)
-        cuts = [n//3, 2*n//3]
+    # ---- encrypt ----
+    @staticmethod
+    def encrypt(key, data):
 
+        f = Fernet(GOD.fernet_key(key))
+        box = f.encrypt(data)
+
+        n=len(box)
         return [
-            box[:cuts[0]],
-            box[cuts[0]:cuts[1]],
-            box[cuts[1]:]
+            box[:n//3],
+            box[n//3:2*n//3],
+            box[2*n//3:]
         ]
 
-    # ---- decrypt ----
     @staticmethod
-    def decrypt(secret, frags):
-        key = TTUEngine.derive_key(secret)
-        return Fernet(key).decrypt(b"".join(frags))
-
-ENGINE = TTUEngine()
+    def decrypt(key, frags):
+        f = Fernet(GOD.fernet_key(key))
+        return f.decrypt(b"".join(frags))
 
 # =====================================================
-# DESIGN ULTRA
-# =====================================================
-st.markdown("""
-<style>
-.stApp {background:#040404;color:white;font-family:monospace;}
-.msg{
- padding:14px;border-radius:14px;margin:10px 0;
- background:#101010;border:1px solid #222;
-}
-.me{border-left:5px solid #00ffaa;}
-.other{border-left:5px solid #555;}
-.timer{opacity:.6;font-size:12px}
-.badge{
- background:#00ffaa22;
- padding:4px 10px;
- border-radius:20px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =====================================================
-# SESSION INIT
+# SESSION
 # =====================================================
 if "uid" not in st.session_state:
-    st.session_state.uid = f"Z-{uuid.uuid4().hex[:4]}"
+    st.session_state.uid=f"Z-{uuid.uuid4().hex[:4]}"
 
 if "auth" not in st.session_state:
-    st.session_state.auth = False
+    st.session_state.auth=False
 
 # =====================================================
 # AUTH
 # =====================================================
 if not st.session_state.auth:
 
-    st.title("🛰️ FREE-KONGOSSA ULTRA")
+    st.title("🛰️ FREE-KONGOSSA GODMODE")
 
-    secret = st.text_input("Code secret", type="password")
+    s=st.text_input("Code Tunnel",type="password")
+    ghost=st.checkbox("👁️ Mode Fantôme")
 
     if st.button("ENTRER"):
-        if secret:
-            st.session_state.secret = secret
-            st.session_state.sid = ENGINE.tunnel_id(secret)
-            st.session_state.auth = True
+        if s:
+            st.session_state.secret=s
+            st.session_state.sid=GOD.tunnel(s)
+            st.session_state.key=GOD.seed(s)
+            st.session_state.ghost=ghost
+            st.session_state.auth=True
             st.rerun()
 
     st.stop()
 
-secret = st.session_state.secret
-sid = st.session_state.sid
+sid=st.session_state.sid
+secret=st.session_state.secret
 
 if sid not in DB["FLUX"]:
-    DB["FLUX"][sid] = []
+    DB["FLUX"][sid]=[]
+    DB["CHAIN"][sid]=b"GENESIS"
 
 # =====================================================
-# PRESENCE HEARTBEAT
+# PRESENCE
 # =====================================================
-now = time.time()
-DB["PRESENCE"][st.session_state.uid] = now
+now=time.time()
 
-# cleanup ghosts
-DB["PRESENCE"] = {
-    u:t for u,t in DB["PRESENCE"].items()
-    if now - t < 25
+if not st.session_state.ghost:
+    DB["PRESENCE"][st.session_state.uid]=now
+
+DB["PRESENCE"]={
+u:t for u,t in DB["PRESENCE"].items()
+if now-t<30
 }
 
-active = len(DB["PRESENCE"])
+active=len(DB["PRESENCE"])
 
 # =====================================================
-# AUTO PURGE EXPIRED
+# AUTO CLEAN TTL
 # =====================================================
-TTL = 120  # secondes
+TTL=180
 
-new_flux = []
-for m in DB["FLUX"][sid]:
-    if now < m["expiry"]:
-        new_flux.append(m)
-
-DB["FLUX"][sid] = new_flux
+DB["FLUX"][sid]=[
+m for m in DB["FLUX"][sid]
+if now<m["exp"]
+]
 
 # =====================================================
 # HEADER
 # =====================================================
-c1,c2 = st.columns([3,1])
-c1.title("💬 Tunnel sécurisé")
-c2.markdown(f"<div class='badge'>🟢 {active}</div>",
-            unsafe_allow_html=True)
+c1,c2=st.columns([3,1])
+c1.title("💬 GODMODE TUNNEL")
+c2.metric("ACTIFS",active)
 
 # =====================================================
 # DISPLAY
 # =====================================================
+activity=0
+
 for m in reversed(DB["FLUX"][sid]):
 
-    is_me = m["sender"] == st.session_state.uid
-    cls = "me" if is_me else "other"
-
     try:
-        raw = ENGINE.decrypt(secret, m["frags"])
+        raw=GOD.decrypt(m["key"],m["frags"])
+        activity+=1
 
-        remaining = int(m["expiry"] - time.time())
+        st.markdown("----")
+        st.caption("VOUS" if m["sender"]==st.session_state.uid else m["sender"])
 
-        st.markdown(f"<div class='msg {cls}'>",
-                    unsafe_allow_html=True)
-
-        st.caption("VOUS" if is_me else m["sender"])
-
-        if m["type"] == "text":
+        if m["type"]=="text":
             st.write(raw.decode())
-
         elif "image" in m["type"]:
             st.image(raw)
-
         elif "video" in m["type"]:
             st.video(raw)
-
-        elif "audio" in m["type"]:
+        else:
             st.audio(raw)
 
-        st.markdown(
-            f"<div class='timer'>⏳ {remaining}s</div>",
-            unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
+        remain=int(m["exp"]-time.time())
+        st.caption(f"⏳ {remain}s")
 
     except:
         pass
 
 # =====================================================
-# SEND SIGNAL
+# SEND
 # =====================================================
-st.divider()
+mode=st.radio("Signal",["Texte","Média","Vocal"],horizontal=True)
 
-mode = st.radio(
-    "Signal",
-    ["Texte","Média","Vocal"],
-    horizontal=True
-)
+def send(data,typ):
 
-def push_message(data, mtype):
+    key=st.session_state.key
 
-    frags = ENGINE.encrypt(secret, data)
+    # evolve key
+    new_key=GOD.evolve(key,data)
+    st.session_state.key=new_key
 
-    signature = hashlib.sha256(
-        data + secret.encode()
-    ).hexdigest()
+    frags=GOD.encrypt(new_key,data)
 
-    if signature in DB["SIGNATURES"]:
+    # chain integrity
+    prev=DB["CHAIN"][sid]
+    chain=hashlib.sha256(prev+data).digest()
+    DB["CHAIN"][sid]=chain
+
+    sig=hashlib.sha256(chain).hexdigest()
+    if sig in DB["SIGN"]:
         return
 
-    DB["SIGNATURES"].add(signature)
+    DB["SIGN"].add(sig)
 
     DB["FLUX"][sid].append({
-        "sender": st.session_state.uid,
-        "frags": frags,
-        "type": mtype,
-        "expiry": time.time() + TTL
+        "sender":st.session_state.uid,
+        "frags":frags,
+        "type":typ,
+        "key":new_key,
+        "exp":time.time()+TTL
     })
 
-if mode == "Texte":
-    txt = st.text_area("Message")
+if mode=="Texte":
+    t=st.text_area("Message")
     if st.button("ENVOYER"):
-        if txt:
-            push_message(txt.encode(),"text")
+        if t:
+            send(t.encode(),"text")
             st.rerun()
 
-elif mode == "Média":
-    f = st.file_uploader("Upload")
+elif mode=="Média":
+    f=st.file_uploader("Upload")
     if f and st.button("DIFFUSER"):
-        push_message(f.getvalue(), f.type)
+        send(f.getvalue(),f.type)
         st.rerun()
 
-elif mode == "Vocal":
-    a = st.audio_input("Micro")
+elif mode=="Vocal":
+    a=st.audio_input("Micro")
     if a and st.button("ENVOYER VOCAL"):
-        push_message(a.getvalue(),"audio/wav")
+        send(a.getvalue(),"audio/wav")
         st.rerun()
 
 # =====================================================
 # SMART REFRESH
 # =====================================================
-time.sleep(3)
+delay=2 if activity>5 else 5
+time.sleep(delay)
 st.rerun()
