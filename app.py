@@ -4,7 +4,8 @@ import pandas as pd
 import time
 from datetime import datetime
 import uuid
-import hashlib  # Ajout pour les hash
+import hashlib
+import hmac
 
 # =====================================================
 # CONFIGURATION
@@ -28,17 +29,27 @@ def init_supabase():
 supabase = init_supabase()
 
 # =====================================================
-# FONCTIONS DE HASH (pour la vérification admin)
+# FONCTIONS DE HASH
 # =====================================================
-def hash_string(s):
+def hash_string(s: str) -> str:
     """Retourne le hash SHA-256 d'une chaîne"""
     return hashlib.sha256(s.encode()).hexdigest()
 
+def verify_admin_code(email: str, code: str) -> bool:
+    """Vérifie si l'email et le code correspondent aux hashs admin stockés."""
+    try:
+        admin_email_hash = st.secrets["admin"]["email_hash"]
+        admin_code_hash = st.secrets["admin"]["password_hash"]
+        return hmac.compare_digest(hash_string(email), admin_email_hash) and \
+               hmac.compare_digest(hash_string(code), admin_code_hash)
+    except KeyError:
+        # Si les secrets admin ne sont pas définis, personne ne peut être admin
+        return False
+
 # =====================================================
-# GESTION DE L'AUTHENTIFICATION (SUPABASE AUTH)
+# GESTION DE L'AUTHENTIFICATION
 # =====================================================
 def login_signup():
-    """Gère l'écran de connexion / inscription"""
     st.title("🌍 Bienvenue sur le réseau social GEN-Z")
 
     tab1, tab2 = st.tabs(["Se connecter", "Créer un compte"])
@@ -50,51 +61,60 @@ def login_signup():
             submitted = st.form_submit_button("Connexion")
             if submitted:
                 try:
-                    res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                    res = supabase.auth.sign_in_with_password(
+                        {"email": email, "password": password}
+                    )
                     st.session_state["user"] = res.user
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur : {e}")
+                    st.error(f"Erreur de connexion : {e}")
 
     with tab2:
         with st.form("signup_form"):
             new_email = st.text_input("Email")
             new_password = st.text_input("Mot de passe", type="password")
             username = st.text_input("Nom d'utilisateur (unique)")
-            # Champ pour le code administrateur (optionnel)
             admin_code = st.text_input("Code administrateur (si vous en avez un)", type="password")
             submitted = st.form_submit_button("Créer mon compte")
 
             if submitted:
+                # Validation basique
+                if not new_email or not new_password or not username:
+                    st.error("Tous les champs sont obligatoires.")
+                    return
+
                 try:
                     # Création de l'utilisateur dans Supabase Auth
-                    res = supabase.auth.sign_up({"email": new_email, "password": new_password})
+                    res = supabase.auth.sign_up({
+                        "email": new_email,
+                        "password": new_password
+                    })
                     user = res.user
-                    if user:
-                        # Déterminer le rôle
-                        role = 'user'
-                        # Vérifier si l'email et le code correspondent aux hash admin
-                        if (hash_string(new_email) == st.secrets["admin"]["email_hash"] and 
-                            hash_string(admin_code) == st.secrets["admin"]["password_hash"]):
-                            role = 'admin'
+                    if not user:
+                        st.error("La création du compte a échoué.")
+                        return
 
-                        # Ajout du profil dans la table profiles
-                        profile_data = {
-                            "id": user.id,
-                            "username": username,
-                            "bio": "",
-                            "location": "",
-                            "profile_pic": "",
-                            "role": role,  # Nouvelle colonne
-                            "created_at": datetime.now().isoformat()
-                        }
-                        supabase.table("profiles").insert(profile_data).execute()
+                    # Déterminer le rôle
+                    role = "admin" if verify_admin_code(new_email, admin_code) else "user"
 
-                        st.success("Compte créé ! Connecte-toi.")
-                        time.sleep(2)
-                        st.rerun()
+                    # Ajout du profil dans la table profiles
+                    profile_data = {
+                        "id": user.id,
+                        "username": username,
+                        "bio": "",
+                        "location": "",
+                        "profile_pic": "",
+                        "role": role,
+                        "created_at": datetime.now().isoformat()
+                    }
+                    supabase.table("profiles").insert(profile_data).execute()
+
+                    st.success("Compte créé avec succès ! Connectez-vous.")
+                    time.sleep(2)
+                    st.rerun()
+
                 except Exception as e:
-                    st.error(f"Erreur : {e}")
+                    st.error(f"Erreur lors de l'inscription : {e}")
 
 def logout():
     supabase.auth.sign_out()
@@ -106,20 +126,28 @@ if "user" not in st.session_state:
     login_signup()
     st.stop()
 
-# Récupérer l'utilisateur courant
 user = st.session_state["user"]
 
-# Charger le profil depuis la table profiles
+# =====================================================
+# CHARGEMENT DU PROFIL
+# =====================================================
 @st.cache_data(ttl=60)
 def get_profile(user_id):
     res = supabase.table("profiles").select("*").eq("id", user_id).execute()
-    if res.data:
-        return res.data[0]
-    return None
+    return res.data[0] if res.data else None
 
 profile = get_profile(user.id)
 
-# Vérifier si l'utilisateur est admin
+# Si le profil n'existe pas encore (rare, mais possible après une création récente), on force un rechargement
+if profile is None:
+    st.warning("Chargement du profil...")
+    time.sleep(1)
+    st.cache_data.clear()
+    profile = get_profile(user.id)
+    if profile is None:
+        st.error("Impossible de charger votre profil. Veuillez réessayer.")
+        logout()
+
 def is_admin():
     return profile and profile.get("role") == "admin"
 
@@ -132,21 +160,18 @@ if is_admin():
     st.sidebar.markdown("🔑 **Administrateur**")
 st.sidebar.write(f"ID : {user.id[:8]}...")
 
-# Construction dynamique du menu
 menu_options = ["🌐 Feed", "👤 Mon Profil", "✉️ Messages", "🏪 Marketplace", "💰 Wallet", "⚙️ Paramètres"]
 if is_admin():
     menu_options.append("🛡️ Admin")
-
 menu = st.sidebar.radio("Navigation", menu_options)
 
 if st.sidebar.button("🚪 Déconnexion"):
     logout()
 
 # =====================================================
-# FONCTIONS UTILES
+# FONCTIONS UTILES (likes, commentaires)
 # =====================================================
 def like_post(post_id):
-    """Ajoute un like (trigger update like_count)"""
     try:
         supabase.table("likes").insert({
             "post_id": post_id,
@@ -156,10 +181,12 @@ def like_post(post_id):
         time.sleep(0.5)
         st.rerun()
     except Exception as e:
-        st.error("Vous avez déjà liké ce post.")
+        st.error("Vous avez déjà liké ce post ou une erreur est survenue.")
 
 def add_comment(post_id, text):
-    """Ajoute un commentaire (trigger update comment_count)"""
+    if not text.strip():
+        st.warning("Le commentaire ne peut pas être vide.")
+        return
     supabase.table("comments").insert({
         "post_id": post_id,
         "user_id": user.id,
@@ -170,43 +197,43 @@ def add_comment(post_id, text):
     st.rerun()
 
 # =====================================================
-# PAGE FEED
+# PAGES
 # =====================================================
+
 def feed_page():
     st.header("🌐 Fil d'actualité")
 
-    # Formulaire de création de post
+    # Création de post
     with st.expander("✍️ Créer un post", expanded=False):
         with st.form("new_post"):
             post_text = st.text_area("Quoi de neuf ?")
-            # Option pour upload média (simplifié)
             media_file = st.file_uploader("Ajouter une image/vidéo (optionnel)", type=["png", "jpg", "jpeg", "mp4"])
             submitted = st.form_submit_button("Publier")
             if submitted and post_text:
-                # Gestion du média : upload vers Supabase Storage
-                media_path = None
-                media_type = None
-                if media_file:
-                    # Générer un nom de fichier unique
-                    ext = media_file.name.split(".")[-1]
-                    file_name = f"{user.id}/{uuid.uuid4()}.{ext}"
-                    # Upload dans le bucket 'media'
-                    supabase.storage.from_("media").upload(file_name, media_file.getvalue())
-                    media_path = file_name
-                    media_type = media_file.type
+                try:
+                    media_path = None
+                    media_type = None
+                    if media_file:
+                        ext = media_file.name.split(".")[-1]
+                        file_name = f"{user.id}/{uuid.uuid4()}.{ext}"
+                        supabase.storage.from_("media").upload(file_name, media_file.getvalue())
+                        media_path = file_name
+                        media_type = media_file.type
 
-                post_data = {
-                    "user_id": user.id,
-                    "text": post_text,
-                    "media_path": media_path,
-                    "media_type": media_type,
-                    "created_at": datetime.now().isoformat()
-                }
-                supabase.table("posts").insert(post_data).execute()
-                st.success("Post publié !")
-                st.rerun()
+                    post_data = {
+                        "user_id": user.id,
+                        "text": post_text,
+                        "media_path": media_path,
+                        "media_type": media_type,
+                        "created_at": datetime.now().isoformat()
+                    }
+                    supabase.table("posts").insert(post_data).execute()
+                    st.success("Post publié !")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur lors de la publication : {e}")
 
-    # Récupération des posts (feed global, trié par date)
+    # Affichage des posts
     posts = supabase.table("posts").select(
         "*, profiles!inner(username, profile_pic), likes(count), comments(count)"
     ).order("created_at", desc=True).limit(50).execute()
@@ -219,24 +246,22 @@ def feed_page():
         with st.container():
             col1, col2 = st.columns([1, 20])
             with col1:
-                # Avatar
-                if post["profiles"]["profile_pic"]:
-                    st.image(post["profiles"]["profile_pic"], width=40)
+                pic = post["profiles"].get("profile_pic")
+                if pic:
+                    st.image(pic, width=40)
                 else:
                     st.image("https://via.placeholder.com/40", width=40)
             with col2:
-                st.markdown(f"**{post['profiles']['username']}**  · {post['created_at'][:10]}")
+                st.markdown(f"**{post['profiles']['username']}** · {post['created_at'][:10]}")
                 st.write(post["text"])
 
-                # Affichage média
                 if post.get("media_path"):
                     file_url = supabase.storage.from_("media").get_public_url(post["media_path"])
-                    if post["media_type"] and "image" in post["media_type"]:
+                    if post.get("media_type") and "image" in post["media_type"]:
                         st.image(file_url)
-                    elif post["media_type"] and "video" in post["media_type"]:
+                    elif post.get("media_type") and "video" in post["media_type"]:
                         st.video(file_url)
 
-                # Statistiques
                 like_count = len(post.get("likes", []))
                 comment_count = len(post.get("comments", []))
 
@@ -246,34 +271,26 @@ def feed_page():
                         like_post(post["id"])
                 with col_b:
                     with st.popover(f"💬 {comment_count} commentaires"):
-                        # Afficher les commentaires existants
                         comments = supabase.table("comments").select(
                             "*, profiles(username)"
                         ).eq("post_id", post["id"]).order("created_at").execute()
                         for c in comments.data:
                             st.markdown(f"**{c['profiles']['username']}** : {c['text']}")
-                        # Ajouter un commentaire
                         new_comment = st.text_input("Votre commentaire", key=f"input_{post['id']}")
                         if st.button("Envoyer", key=f"send_{post['id']}"):
                             add_comment(post["id"], new_comment)
                 with col_c:
                     st.button("🔗 Partager", key=f"share_{post['id']}")
-
             st.divider()
 
-# =====================================================
-# PAGE PROFIL
-# =====================================================
 def profile_page():
     st.header("👤 Mon Profil")
 
-    # Affichage et édition du profil
     with st.form("edit_profile"):
         username = st.text_input("Nom d'utilisateur", value=profile["username"])
         bio = st.text_area("Bio", value=profile.get("bio", ""))
         location = st.text_input("Localisation", value=profile.get("location", ""))
         profile_pic = st.text_input("URL photo de profil", value=profile.get("profile_pic", ""))
-
         if st.form_submit_button("Mettre à jour"):
             supabase.table("profiles").update({
                 "username": username,
@@ -286,25 +303,18 @@ def profile_page():
             st.rerun()
 
     st.subheader("Mes statistiques")
-    # Nombre de posts
     post_count = supabase.table("posts").select("*", count="exact").eq("user_id", user.id).execute()
     st.metric("Posts publiés", post_count.count)
 
-    # Abonnés / abonnements
     followers = supabase.table("follows").select("*", count="exact").eq("followed", user.id).execute()
     following = supabase.table("follows").select("*", count="exact").eq("follower", user.id).execute()
     col1, col2 = st.columns(2)
     col1.metric("Abonnés", followers.count)
     col2.metric("Abonnements", following.count)
 
-# =====================================================
-# PAGE MESSAGES
-# =====================================================
 def messages_page():
     st.header("✉️ Messagerie privée")
 
-    # Liste des conversations (utilisateurs avec qui on a échangé)
-    # Récupérer les messages où l'utilisateur est sender ou recipient
     sent = supabase.table("messages").select("recipient").eq("sender", user.id).execute()
     received = supabase.table("messages").select("sender").eq("recipient", user.id).execute()
 
@@ -318,46 +328,53 @@ def messages_page():
         st.info("Aucune conversation pour l'instant.")
         return
 
-    # Charger les profils des contacts
     contacts = supabase.table("profiles").select("id, username").in_("id", list(contact_ids)).execute()
     contact_dict = {c["id"]: c["username"] for c in contacts.data}
-
-    selected_contact = st.selectbox("Choisir un contact", options=list(contact_dict.keys()), format_func=lambda x: contact_dict[x])
+    selected_contact = st.selectbox(
+        "Choisir un contact",
+        options=list(contact_dict.keys()),
+        format_func=lambda x: contact_dict[x]
+    )
 
     if selected_contact:
         st.subheader(f"Discussion avec {contact_dict[selected_contact]}")
-
-        # Afficher les messages
         messages = supabase.table("messages").select("*").or_(
-            f"and(sender.eq.{user.id},recipient.eq.{selected_contact}),and(sender.eq.{selected_contact},recipient.eq.{user.id})"
+            f"and(sender.eq.{user.id},recipient.eq.{selected_contact}),"
+            f"and(sender.eq.{selected_contact},recipient.eq.{user.id})"
         ).order("created_at").execute()
 
         for msg in messages.data:
             if msg["sender"] == user.id:
-                st.markdown(f"<div style='text-align: right; background-color: #dcf8c6; padding: 8px; border-radius: 10px; margin:5px;'>Vous : {msg.get('text', '')}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='text-align: right; background-color: #dcf8c6; padding: 8px; border-radius: 10px; margin:5px;'>"
+                    f"Vous : {msg.get('text', '')}</div>",
+                    unsafe_allow_html=True
+                )
             else:
-                st.markdown(f"<div style='text-align: left; background-color: #f1f0f0; padding: 8px; border-radius: 10px; margin:5px;'>{contact_dict[selected_contact]} : {msg.get('text', '')}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='text-align: left; background-color: #f1f0f0; padding: 8px; border-radius: 10px; margin:5px;'>"
+                    f"{contact_dict[selected_contact]} : {msg.get('text', '')}</div>",
+                    unsafe_allow_html=True
+                )
 
-        # Envoyer un message
         with st.form("new_message"):
             msg_text = st.text_area("Votre message")
             if st.form_submit_button("Envoyer"):
-                supabase.table("messages").insert({
-                    "sender": user.id,
-                    "recipient": selected_contact,
-                    "text": msg_text,
-                    "created_at": datetime.now().isoformat()
-                }).execute()
-                st.success("Message envoyé")
-                st.rerun()
+                if msg_text.strip():
+                    supabase.table("messages").insert({
+                        "sender": user.id,
+                        "recipient": selected_contact,
+                        "text": msg_text,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+                    st.success("Message envoyé")
+                    st.rerun()
+                else:
+                    st.warning("Le message ne peut pas être vide.")
 
-# =====================================================
-# PAGE MARKETPLACE
-# =====================================================
 def marketplace_page():
     st.header("🏪 Marketplace")
 
-    # Formulaire pour ajouter une annonce
     with st.expander("➕ Ajouter une annonce"):
         with st.form("new_listing"):
             title = st.text_input("Titre")
@@ -366,27 +383,28 @@ def marketplace_page():
             media = st.file_uploader("Image du produit", type=["png", "jpg", "jpeg"])
             submitted = st.form_submit_button("Publier l'annonce")
             if submitted and title:
-                # Upload de l'image
-                media_url = None
-                if media:
-                    file_name = f"marketplace/{user.id}/{uuid.uuid4()}.jpg"
-                    supabase.storage.from_("marketplace").upload(file_name, media.getvalue())
-                    media_url = supabase.storage.from_("marketplace").get_public_url(file_name)
+                try:
+                    media_url = None
+                    if media:
+                        file_name = f"marketplace/{user.id}/{uuid.uuid4()}.jpg"
+                        supabase.storage.from_("marketplace").upload(file_name, media.getvalue())
+                        media_url = supabase.storage.from_("marketplace").get_public_url(file_name)
 
-                supabase.table("marketplace_listings").insert({
-                    "user_id": user.id,
-                    "title": title,
-                    "description": description,
-                    "price_kc": price,
-                    "media_url": media_url,
-                    "media_type": "image",
-                    "created_at": datetime.now().isoformat(),
-                    "is_active": True
-                }).execute()
-                st.success("Annonce ajoutée !")
-                st.rerun()
+                    supabase.table("marketplace_listings").insert({
+                        "user_id": user.id,
+                        "title": title,
+                        "description": description,
+                        "price_kc": price,
+                        "media_url": media_url,
+                        "media_type": "image",
+                        "created_at": datetime.now().isoformat(),
+                        "is_active": True
+                    }).execute()
+                    st.success("Annonce ajoutée !")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
 
-    # Afficher les annonces actives
     st.subheader("Annonces récentes")
     listings = supabase.table("marketplace_listings").select(
         "*, profiles!inner(username)"
@@ -406,16 +424,12 @@ def marketplace_page():
             st.write(f"💰 {listing['price_kc']} KC")
             st.caption(f"Par {listing['profiles']['username']}")
 
-# =====================================================
-# PAGE WALLET
-# =====================================================
 def wallet_page():
     st.header("💰 Mon Wallet")
 
     # Récupérer ou créer le wallet
     wallet = supabase.table("wallets").select("*").eq("user_id", user.id).execute()
     if not wallet.data:
-        # Créer un wallet par défaut
         supabase.table("wallets").insert({
             "user_id": user.id,
             "kongo_balance": 0.0,
@@ -433,12 +447,10 @@ def wallet_page():
         st.metric("Total miné", f"{wallet_data['total_mined']} KC")
 
     if st.button("⛏️ Miner (récompense quotidienne)"):
-        # Vérifier délai (24h)
         last = datetime.fromisoformat(wallet_data["last_reward_at"].replace("Z", "+00:00"))
         now = datetime.now()
         delta = now - last
         if delta.total_seconds() > 86400:
-            # Ajouter 10 KC
             new_balance = wallet_data["kongo_balance"] + 10
             new_mined = wallet_data["total_mined"] + 10
             supabase.table("wallets").update({
@@ -454,13 +466,9 @@ def wallet_page():
 
     st.subheader("Historique des transactions (à venir)")
 
-# =====================================================
-# PAGE PARAMÈTRES
-# =====================================================
 def settings_page():
     st.header("⚙️ Paramètres")
 
-    # Gestion de l'abonnement
     sub = supabase.table("subscriptions").select("*").eq("user_id", user.id).execute()
     if sub.data:
         plan = sub.data[0]["plan_type"]
@@ -468,135 +476,64 @@ def settings_page():
         st.info(f"Plan actuel : **{plan}**" + (f" (expire le {expires[:10]})" if expires else ""))
     else:
         st.info("Plan actuel : **Gratuit**")
-        if st.button("Passer à Premium"):
-            # Ici tu pourrais intégrer un paiement
-            supabase.table("subscriptions").insert({
-                "user_id": user.id,
-                "plan_type": "Premium",
-                "activated_at": datetime.now().isoformat(),
-                "expires_at": (datetime.now().replace(year=datetime.now().year+1)).isoformat(),
-                "is_active": True
-            }).execute()
-            st.success("Compte Premium activé !")
-            st.rerun()
+
+    if st.button("Passer à Premium"):
+        supabase.table("subscriptions").insert({
+            "user_id": user.id,
+            "plan_type": "Premium",
+            "activated_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now().replace(year=datetime.now().year+1)).isoformat(),
+            "is_active": True
+        }).execute()
+        st.success("Compte Premium activé !")
+        st.rerun()
 
     st.divider()
     st.subheader("Zone dangereuse")
     if st.button("Supprimer mon compte", type="primary"):
-        # Supprimer l'utilisateur (nécessite admin)
         st.warning("Fonction désactivée pour le moment.")
 
-#
-# =====================================================
-# PAGE ADMIN (réservée aux admins)
-# =====================================================
 def admin_page():
     st.header("🛡️ Espace Administration")
-    st.caption("Actions réservées à la modération – utilisez‑les avec discernement.")
+    st.caption("Actions réservées à la modération -- utilisez‑les avec discernement.")
 
     tab1, tab2, tab3 = st.tabs(["Utilisateurs", "Posts signalés", "Logs d'action"])
 
     with tab1:
         st.subheader("Gestion des utilisateurs")
-        # Charger tous les profils (sauf le sien éventuellement)
         users = supabase.table("profiles").select("id, username, email, role, created_at").execute()
         df_users = pd.DataFrame(users.data)
         st.dataframe(df_users)
 
-        # Action simple : changer le rôle d’un utilisateur
         with st.form("change_role"):
-            user_id = st.selectbox("Sélectionner un utilisateur", options=df_users["id"], format_func=lambda x: df_users[df_users["id"]==x]["username"].values[0])
+            user_id = st.selectbox(
+                "Sélectionner un utilisateur",
+                options=df_users["id"],
+                format_func=lambda x: df_users[df_users["id"] == x]["username"].values[0]
+            )
             new_role = st.selectbox("Nouveau rôle", ["user", "admin", "moderator"])
             if st.form_submit_button("Appliquer"):
                 supabase.table("profiles").update({"role": new_role}).eq("id", user_id).execute()
                 st.success("Rôle mis à jour")
+                st.cache_data.clear()
                 st.rerun()
 
     with tab2:
         st.subheader("Posts signalés")
-        # Idéalement tu auras une table "reports" pour les signalements
-        # En attendant, on peut afficher tous les posts avec un bouton de suppression
         posts = supabase.table("posts").select("*, profiles(username)").order("created_at", desc=True).limit(100).execute()
         for post in posts.data:
-            with st.expander(f"Post de {post['profiles']['username']} – {post['created_at'][:16]}"):
+            with st.expander(f"Post de {post['profiles']['username']} -- {post['created_at'][:16]}"):
                 st.write(post["text"])
                 if post.get("media_path"):
                     file_url = supabase.storage.from_("media").get_public_url(post["media_path"])
                     st.image(file_url, width=200)
                 if st.button("🗑️ Supprimer ce post", key=f"del_{post['id']}"):
-                    # Supprimer le post (les likes et commentaires seront supprimés en cascade si FK)
                     supabase.table("posts").delete().eq("id", post["id"]).execute()
                     st.success("Post supprimé")
                     st.rerun()
 
     with tab3:
         st.subheader("Journal des actions")
-        # À implémenter avec une table "admin_logs" pour tracer chaque action
-        st.info("Fonctionnalité à venir : traçabilité des actions d'administration.")
-
-# =====================================================
-# ROUTEUR PRINCIPAL
-# =====================================================
-if menu == "🌐 Feed":
-    feed_page()
-elif menu == "👤 Mon Profil":
-    profile_page()
-elif menu == "✉️ Messages":
-    messages_page()
-elif menu == "🏪 Marketplace":
-    marketplace_page()
-elif menu == "💰 Wallet":
-    wallet_page()
-elif menu == "⚙️ Paramètres":
-    settings_page()
-elif menu == "🛡️ Admin":
-    admin_page()
- 
-# =====================================================
-# PAGE ADMIN (réservée aux admins)
-# =====================================================
-def admin_page():
-    st.header("🛡️ Espace Administration")
-    st.caption("Actions réservées à la modération – utilisez‑les avec discernement.")
-
-    tab1, tab2, tab3 = st.tabs(["Utilisateurs", "Posts signalés", "Logs d'action"])
-
-    with tab1:
-        st.subheader("Gestion des utilisateurs")
-        # Charger tous les profils (sauf le sien éventuellement)
-        users = supabase.table("profiles").select("id, username, email, role, created_at").execute()
-        df_users = pd.DataFrame(users.data)
-        st.dataframe(df_users)
-
-        # Action simple : changer le rôle d’un utilisateur
-        with st.form("change_role"):
-            user_id = st.selectbox("Sélectionner un utilisateur", options=df_users["id"], format_func=lambda x: df_users[df_users["id"]==x]["username"].values[0])
-            new_role = st.selectbox("Nouveau rôle", ["user", "admin", "moderator"])
-            if st.form_submit_button("Appliquer"):
-                supabase.table("profiles").update({"role": new_role}).eq("id", user_id).execute()
-                st.success("Rôle mis à jour")
-                st.rerun()
-
-    with tab2:
-        st.subheader("Posts signalés")
-        # Idéalement tu auras une table "reports" pour les signalements
-        # En attendant, on peut afficher tous les posts avec un bouton de suppression
-        posts = supabase.table("posts").select("*, profiles(username)").order("created_at", desc=True).limit(100).execute()
-        for post in posts.data:
-            with st.expander(f"Post de {post['profiles']['username']} – {post['created_at'][:16]}"):
-                st.write(post["text"])
-                if post.get("media_path"):
-                    file_url = supabase.storage.from_("media").get_public_url(post["media_path"])
-                    st.image(file_url, width=200)
-                if st.button("🗑️ Supprimer ce post", key=f"del_{post['id']}"):
-                    # Supprimer le post (les likes et commentaires seront supprimés en cascade si FK)
-                    supabase.table("posts").delete().eq("id", post["id"]).execute()
-                    st.success("Post supprimé")
-                    st.rerun()
-
-    with tab3:
-        st.subheader("Journal des actions")
-        # À implémenter avec une table "admin_logs" pour tracer chaque action
         st.info("Fonctionnalité à venir : traçabilité des actions d'administration.")
 
 # =====================================================
