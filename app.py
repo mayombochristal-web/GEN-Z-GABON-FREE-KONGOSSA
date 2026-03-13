@@ -4,10 +4,7 @@ import pandas as pd
 import time
 from datetime import datetime
 import uuid
-import re
-import unicodedata
-from PIL import Image
-import io
+import hashlib  # Ajout pour les hash
 
 # =====================================================
 # CONFIGURATION
@@ -31,75 +28,11 @@ def init_supabase():
 supabase = init_supabase()
 
 # =====================================================
-# FONCTIONS D'UPLOAD AMÉLIORÉES
+# FONCTIONS DE HASH (pour la vérification admin)
 # =====================================================
-def clean_filename(filename):
-    """Supprime accents, remplace espaces, enlève caractères spéciaux"""
-    filename = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode("ascii")
-    filename = filename.replace(" ", "_")
-    filename = re.sub(r"[^a-zA-Z0-9_.-]", "", filename)
-    return filename
-
-def compress_image(uploaded_file, max_size=1024):
-    """Redimensionne et compresse une image pour optimiser le stockage"""
-    image = Image.open(uploaded_file)
-    # Redimensionner si trop grande
-    image.thumbnail((max_size, max_size))
-    buffer = io.BytesIO()
-    # Sauvegarder en JPEG avec qualité 85
-    image.save(buffer, format="JPEG", quality=85)
-    buffer.seek(0)
-    return buffer
-
-def upload_to_supabase(bucket, file, user_id, allowed_types=None, max_size_mb=5):
-    """
-    Upload sécurisé d'un fichier vers Supabase Storage.
-    - bucket : nom du bucket ('media' ou 'marketplace')
-    - file : fichier uploadé via st.file_uploader
-    - user_id : id de l'utilisateur
-    - allowed_types : liste des types MIME autorisés (ex: ['image/png','image/jpeg'])
-    - max_size_mb : taille max en Mo
-    Retourne l'URL publique ou None en cas d'erreur.
-    """
-    try:
-        # Vérification taille
-        if file.size > max_size_mb * 1024 * 1024:
-            st.error(f"Fichier trop volumineux (max {max_size_mb} Mo)")
-            return None
-
-        # Vérification type MIME
-        if allowed_types and file.type not in allowed_types:
-            st.error(f"Type de fichier non autorisé. Types acceptés : {', '.join(allowed_types)}")
-            return None
-
-        # Nettoyer le nom et extraire extension
-        safe_name = clean_filename(file.name)
-        ext = safe_name.split(".")[-1].lower()
-        # Générer un nom unique
-        unique_name = f"{user_id}/{uuid.uuid4()}.{ext}"
-
-        # Compression si c'est une image
-        if file.type and file.type.startswith("image/"):
-            file_data = compress_image(file)
-            content_type = "image/jpeg"
-        else:
-            file_data = file.getvalue()
-            content_type = file.type
-
-        # Upload vers Supabase
-        supabase.storage.from_(bucket).upload(
-            unique_name,
-            file_data,
-            {"content-type": content_type}
-        )
-
-        # Récupérer l'URL publique
-        public_url = supabase.storage.from_(bucket).get_public_url(unique_name)
-        return public_url
-
-    except Exception as e:
-        st.error(f"Erreur lors de l'upload : {e}")
-        return None
+def hash_string(s):
+    """Retourne le hash SHA-256 d'une chaîne"""
+    return hashlib.sha256(s.encode()).hexdigest()
 
 # =====================================================
 # GESTION DE L'AUTHENTIFICATION (SUPABASE AUTH)
@@ -128,13 +61,23 @@ def login_signup():
             new_email = st.text_input("Email")
             new_password = st.text_input("Mot de passe", type="password")
             username = st.text_input("Nom d'utilisateur (unique)")
+            # Champ pour le code administrateur (optionnel)
+            admin_code = st.text_input("Code administrateur (si vous en avez un)", type="password")
             submitted = st.form_submit_button("Créer mon compte")
+
             if submitted:
                 try:
                     # Création de l'utilisateur dans Supabase Auth
                     res = supabase.auth.sign_up({"email": new_email, "password": new_password})
                     user = res.user
                     if user:
+                        # Déterminer le rôle
+                        role = 'user'
+                        # Vérifier si l'email et le code correspondent aux hash admin
+                        if (hash_string(new_email) == st.secrets["admin"]["email_hash"] and 
+                            hash_string(admin_code) == st.secrets["admin"]["password_hash"]):
+                            role = 'admin'
+
                         # Ajout du profil dans la table profiles
                         profile_data = {
                             "id": user.id,
@@ -142,9 +85,11 @@ def login_signup():
                             "bio": "",
                             "location": "",
                             "profile_pic": "",
+                            "role": role,  # Nouvelle colonne
                             "created_at": datetime.now().isoformat()
                         }
                         supabase.table("profiles").insert(profile_data).execute()
+
                         st.success("Compte créé ! Connecte-toi.")
                         time.sleep(2)
                         st.rerun()
@@ -174,17 +119,25 @@ def get_profile(user_id):
 
 profile = get_profile(user.id)
 
+# Vérifier si l'utilisateur est admin
+def is_admin():
+    return profile and profile.get("role") == "admin"
+
 # =====================================================
 # NAVIGATION (SIDEBAR)
 # =====================================================
 st.sidebar.image("https://via.placeholder.com/150x50?text=GEN-Z", use_column_width=True)
 st.sidebar.write(f"Connecté en tant que : **{profile['username']}**")
+if is_admin():
+    st.sidebar.markdown("🔑 **Administrateur**")
 st.sidebar.write(f"ID : {user.id[:8]}...")
 
-menu = st.sidebar.radio(
-    "Navigation",
-    ["🌐 Feed", "👤 Mon Profil", "✉️ Messages", "🏪 Marketplace", "💰 Wallet", "⚙️ Paramètres"]
-)
+# Construction dynamique du menu
+menu_options = ["🌐 Feed", "👤 Mon Profil", "✉️ Messages", "🏪 Marketplace", "💰 Wallet", "⚙️ Paramètres"]
+if is_admin():
+    menu_options.append("🛡️ Admin")
+
+menu = st.sidebar.radio("Navigation", menu_options)
 
 if st.sidebar.button("🚪 Déconnexion"):
     logout()
@@ -226,29 +179,21 @@ def feed_page():
     with st.expander("✍️ Créer un post", expanded=False):
         with st.form("new_post"):
             post_text = st.text_area("Quoi de neuf ?")
-            media_file = st.file_uploader(
-                "Ajouter une image/vidéo (optionnel)",
-                type=["png", "jpg", "jpeg", "mp4", "mov", "avi"]
-            )
+            # Option pour upload média (simplifié)
+            media_file = st.file_uploader("Ajouter une image/vidéo (optionnel)", type=["png", "jpg", "jpeg", "mp4"])
             submitted = st.form_submit_button("Publier")
             if submitted and post_text:
+                # Gestion du média : upload vers Supabase Storage
                 media_path = None
                 media_type = None
                 if media_file:
-                    # Types autorisés pour les médias
-                    allowed_image = ["image/png", "image/jpeg", "image/jpg"]
-                    allowed_video = ["video/mp4", "video/quicktime", "video/x-msvideo"]
-                    allowed_all = allowed_image + allowed_video
-                    media_url = upload_to_supabase(
-                        "media",
-                        media_file,
-                        user.id,
-                        allowed_types=allowed_all,
-                        max_size_mb=10  # 10 Mo max pour les vidéos
-                    )
-                    if media_url:
-                        media_path = media_url
-                        media_type = media_file.type
+                    # Générer un nom de fichier unique
+                    ext = media_file.name.split(".")[-1]
+                    file_name = f"{user.id}/{uuid.uuid4()}.{ext}"
+                    # Upload dans le bucket 'media'
+                    supabase.storage.from_("media").upload(file_name, media_file.getvalue())
+                    media_path = file_name
+                    media_type = media_file.type
 
                 post_data = {
                     "user_id": user.id,
@@ -285,10 +230,11 @@ def feed_page():
 
                 # Affichage média
                 if post.get("media_path"):
+                    file_url = supabase.storage.from_("media").get_public_url(post["media_path"])
                     if post["media_type"] and "image" in post["media_type"]:
-                        st.image(post["media_path"])
+                        st.image(file_url)
                     elif post["media_type"] and "video" in post["media_type"]:
-                        st.video(post["media_path"])
+                        st.video(file_url)
 
                 # Statistiques
                 like_count = len(post.get("likes", []))
@@ -326,35 +272,18 @@ def profile_page():
         username = st.text_input("Nom d'utilisateur", value=profile["username"])
         bio = st.text_area("Bio", value=profile.get("bio", ""))
         location = st.text_input("Localisation", value=profile.get("location", ""))
-        # Upload de photo de profil
-        profile_image = st.file_uploader(
-            "Photo de profil",
-            type=["png", "jpg", "jpeg"]
-        )
-        submitted = st.form_submit_button("Mettre à jour")
+        profile_pic = st.text_input("URL photo de profil", value=profile.get("profile_pic", ""))
 
-    # Traitement en dehors du formulaire pour éviter de re-soumettre l'upload à chaque rerun
-    if submitted:
-        update_data = {
-            "username": username,
-            "bio": bio,
-            "location": location
-        }
-        # Si une nouvelle image a été uploadée
-        if profile_image:
-            image_url = upload_to_supabase(
-                "media",
-                profile_image,
-                user.id,
-                allowed_types=["image/png", "image/jpeg", "image/jpg"],
-                max_size_mb=2
-            )
-            if image_url:
-                update_data["profile_pic"] = image_url
-        supabase.table("profiles").update(update_data).eq("id", user.id).execute()
-        st.success("Profil mis à jour")
-        st.cache_data.clear()
-        st.rerun()
+        if st.form_submit_button("Mettre à jour"):
+            supabase.table("profiles").update({
+                "username": username,
+                "bio": bio,
+                "location": location,
+                "profile_pic": profile_pic
+            }).eq("id", user.id).execute()
+            st.success("Profil mis à jour")
+            st.cache_data.clear()
+            st.rerun()
 
     st.subheader("Mes statistiques")
     # Nombre de posts
@@ -375,6 +304,7 @@ def messages_page():
     st.header("✉️ Messagerie privée")
 
     # Liste des conversations (utilisateurs avec qui on a échangé)
+    # Récupérer les messages où l'utilisateur est sender ou recipient
     sent = supabase.table("messages").select("recipient").eq("sender", user.id).execute()
     received = supabase.table("messages").select("sender").eq("recipient", user.id).execute()
 
@@ -433,28 +363,23 @@ def marketplace_page():
             title = st.text_input("Titre")
             description = st.text_area("Description")
             price = st.number_input("Prix (KC)", min_value=0.0, step=0.1)
-            media_file = st.file_uploader(
-                "Image du produit",
-                type=["png", "jpg", "jpeg"]
-            )
+            media = st.file_uploader("Image du produit", type=["png", "jpg", "jpeg"])
             submitted = st.form_submit_button("Publier l'annonce")
             if submitted and title:
+                # Upload de l'image
                 media_url = None
-                if media_file:
-                    media_url = upload_to_supabase(
-                        "marketplace",
-                        media_file,
-                        user.id,
-                        allowed_types=["image/png", "image/jpeg", "image/jpg"],
-                        max_size_mb=2
-                    )
+                if media:
+                    file_name = f"marketplace/{user.id}/{uuid.uuid4()}.jpg"
+                    supabase.storage.from_("marketplace").upload(file_name, media.getvalue())
+                    media_url = supabase.storage.from_("marketplace").get_public_url(file_name)
+
                 supabase.table("marketplace_listings").insert({
                     "user_id": user.id,
                     "title": title,
                     "description": description,
                     "price_kc": price,
                     "media_url": media_url,
-                    "media_type": "image" if media_url else None,
+                    "media_type": "image",
                     "created_at": datetime.now().isoformat(),
                     "is_active": True
                 }).execute()
@@ -562,6 +487,53 @@ def settings_page():
         st.warning("Fonction désactivée pour le moment.")
 
 # =====================================================
+# PAGE ADMIN (réservée aux admins)
+# =====================================================
+def admin_page():
+    st.header("🛡️ Espace Administration")
+    st.caption("Actions réservées à la modération – utilisez‑les avec discernement.")
+
+    tab1, tab2, tab3 = st.tabs(["Utilisateurs", "Posts signalés", "Logs d'action"])
+
+    with tab1:
+        st.subheader("Gestion des utilisateurs")
+        # Charger tous les profils (sauf le sien éventuellement)
+        users = supabase.table("profiles").select("id, username, email, role, created_at").execute()
+        df_users = pd.DataFrame(users.data)
+        st.dataframe(df_users)
+
+        # Action simple : changer le rôle d’un utilisateur
+        with st.form("change_role"):
+            user_id = st.selectbox("Sélectionner un utilisateur", options=df_users["id"], format_func=lambda x: df_users[df_users["id"]==x]["username"].values[0])
+            new_role = st.selectbox("Nouveau rôle", ["user", "admin", "moderator"])
+            if st.form_submit_button("Appliquer"):
+                supabase.table("profiles").update({"role": new_role}).eq("id", user_id).execute()
+                st.success("Rôle mis à jour")
+                st.rerun()
+
+    with tab2:
+        st.subheader("Posts signalés")
+        # Idéalement tu auras une table "reports" pour les signalements
+        # En attendant, on peut afficher tous les posts avec un bouton de suppression
+        posts = supabase.table("posts").select("*, profiles(username)").order("created_at", desc=True).limit(100).execute()
+        for post in posts.data:
+            with st.expander(f"Post de {post['profiles']['username']} – {post['created_at'][:16]}"):
+                st.write(post["text"])
+                if post.get("media_path"):
+                    file_url = supabase.storage.from_("media").get_public_url(post["media_path"])
+                    st.image(file_url, width=200)
+                if st.button("🗑️ Supprimer ce post", key=f"del_{post['id']}"):
+                    # Supprimer le post (les likes et commentaires seront supprimés en cascade si FK)
+                    supabase.table("posts").delete().eq("id", post["id"]).execute()
+                    st.success("Post supprimé")
+                    st.rerun()
+
+    with tab3:
+        st.subheader("Journal des actions")
+        # À implémenter avec une table "admin_logs" pour tracer chaque action
+        st.info("Fonctionnalité à venir : traçabilité des actions d'administration.")
+
+# =====================================================
 # ROUTEUR PRINCIPAL
 # =====================================================
 if menu == "🌐 Feed":
@@ -576,3 +548,5 @@ elif menu == "💰 Wallet":
     wallet_page()
 elif menu == "⚙️ Paramètres":
     settings_page()
+elif menu == "🛡️ Admin":
+    admin_page()
